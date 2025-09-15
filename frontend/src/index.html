@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GroBot - Administration</title>
+    <link rel="stylesheet" href="/style.css">
+    <meta name="theme-color" content="#0969da">
+</head>
+
+<body>
+    <!-- SCRIPT D'INITIALISATION DU THÈME -->
+    <!-- Ce script s'exécute immédiatement pour éviter tout flash de couleur -->
+    <script>
+        (function() {
+            try {
+                // Thème par défaut est 'dark'
+                const theme = localStorage.getItem('theme') || 'dark';
+                if (theme === 'dark') {
+                    document.body.classList.add('dark-mode');
+                }
+                // Appliquer aussi la couleur d'accent (par défaut 'blue')
+                const color = localStorage.getItem('color') || 'blue';
+                document.body.setAttribute('data-color', color);
+            } catch (e) {
+                console.error("Failed to apply theme from inline script", e);
+            }
+        })();
+    </script>
+    
+    <div id="spinner" class="spinner-overlay" style="display: none;"><div class="spinner"></div></div>
+    <div id="app-container">
+        <!-- ===== LEFT SIDEBAR ===== -->
+        <aside id="sidebar" class="resizable-column" data-resizable="left">
+            <div class="sidebar-header">
+                <h2>GroBot</h2>
+                <div class="header-actions">
+                    <button id="new-bot-btn" title="Create a new bot">
+                        Add Bot
+                    </button>
+                    <button id="global-settings-btn" class="icon-btn" title="Global Settings">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <path
+                                d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311a1.464 1.464 0 0 1-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c-1.4-.413-1.4-2.397 0-2.81l.34-.1a1.464 1.464 0 0 1 .872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311-.169a1.464 1.464 0 0 1-2.105-.872l-.1-.34zM8 10.93a2.929 2.929 0 1 1 0-5.858 2.929 2.929 0 0 1 0 5.858z" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <div class="bot-list-container">
+                <ul id="sidebar-bots-list">
+                    <!-- Bots will be injected here -->
+                </ul>
+            </div>
+        </aside>
+
+        <div id="resize-handle-left" class="resize-handle"></div>
+
+        <main id="main-content">
+            <header id="chat-header">
+                <div id="chat-header-title">
+                    <h3>Select a bot to get started</h3>
+                </div>
+                <div id="theme-controls-container">
+                    <!-- Icons will be injected here by JS -->
+                </div>
+            </header>
+
+            <div id="central-panel-content">
+                <!-- Content (logs, forms) is now always injected here -->
+            </div>
+        </main>
+    </div>
+
+    <script type="module" src="/main.js"></script>
+</body>
+
+</html>

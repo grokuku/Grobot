@@ -1,0 +1,41 @@
+# requirements.txt
+# Framework Backend
+fastapi
+
+# Serveur ASGI
+uvicorn[standard]
+
+# Tâches asynchrones
+celery
+redis
+
+# Base de données (ORM et driver PostgreSQL)
+sqlalchemy
+psycopg[binary]
+
+# Outil de migration de base de données
+alembic
+
+# Validation et gestion de la configuration
+pydantic
+pydantic-settings
+
+# Client HTTP (pour les appels entre services si nécessaire)
+httpx
+
+# Templating HTML et gestion des formulaires
+jinja2
+python-multipart
+requests
+
+# Client pour la base de données vectorielle
+chromadb-client
+tokenizers
+onnxruntime
+
+# --- NEW: File processing libraries ---
+python-magic
+Pillow
+
+# --- NEW: Ollama client library ---
+ollama>=0.5.3

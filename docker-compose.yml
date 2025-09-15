@@ -1,0 +1,142 @@
+services:
+  # --- Base de données relationnelle ---
+  db:
+    image: postgres:15-alpine
+    container_name: grobot_postgres
+    volumes:
+      - ./data/postgres_data:/var/lib/postgresql/data
+    env_file:
+      - ./.env
+    networks:
+      - grobot_net
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- Base de données vectorielle ---
+  chromadb:
+    build:
+      context: ./chromadb_overriden
+    container_name: grobot_chromadb
+    volumes:
+      - ./data/chroma_data:/data # <-- CORRIGÉ: Le volume doit monter sur le répertoire racine /chroma
+    ports:
+      - "8008:8000"
+    networks:
+      - grobot_net
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "/bin/bash", "-c", "cat < /dev/null > /dev/tcp/localhost/8000" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # --- Broker de messages pour les tâches asynchrones ---
+  redis:
+    image: redis:7-alpine
+    container_name: grobot_redis
+    networks:
+      - grobot_net
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- Service d'Application Combiné (Frontend + API) ---
+  app:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    container_name: grobot_app
+    environment:
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - ./.env
+    ports:
+      - "8180:80"
+    volumes:
+      - ./app:/app/app
+      - ./data/files_data:/app/files
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - grobot_net
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # --- Service Worker pour les tâches de fond (Celery) ---
+  worker:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    container_name: grobot_worker
+    command: celery -A app.worker.celery_app worker --loglevel=info
+    volumes:
+      - ./app:/app/app
+    env_file:
+      - ./.env
+    depends_on:
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_started
+    networks:
+      - grobot_net
+    restart: unless-stopped
+
+  # --- Service de gestion des processus de bots Discord ---
+  discord-bot-launcher:
+    build:
+      context: ./discord_bot_launcher
+    container_name: grobot_discord_launcher
+    command: python launcher.py
+    env_file:
+      - ./.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      app:
+        condition: service_started
+    networks:
+      - grobot_net
+    restart: unless-stopped
+
+  # --- Service d'outils GroBot MCP ---
+  grobot_tools:
+    build:
+      context: ./grobot_tools
+    container_name: grobot_tools_server
+    env_file:
+      - ./.env
+    ports:
+      - "8111:8001" # Expose file_tools sur l'hôte
+      - "8112:8002" # Expose time_tool sur l'hôte
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - grobot_net
+    depends_on:
+      app:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "/bin/bash", "-c", "cat < /dev/null > /dev/tcp/localhost/8001" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# --- Réseau pour la communication entre services ---
+networks:
+  grobot_net:
+    driver: bridge
