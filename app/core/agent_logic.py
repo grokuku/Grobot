@@ -1,5 +1,3 @@
-# app/core/agent_logic.py
-
 import uuid
 import json
 import traceback
@@ -116,6 +114,7 @@ SYNTHESIZER_SYSTEM_PROMPT = """## Core Directives & Rules
 2.  **CRITICAL RULE: Information from tools, which appears in the conversation history with the role 'tool', is the absolute source of truth.** It overrides your internal knowledge. You MUST use this information to formulate your answer without expressing surprise or doubt.
 3.  **You are in a multi-user channel. Pay strict attention to the [user:NAME] prefixes in the conversation history.** Each name represents a unique individual. You MUST track the context for each user separately and address them by their name when appropriate to avoid confusion.
 4.  **Your primary role is to synthesize all the information provided (user query, conversation history, tool results) into a clear, helpful, and natural-sounding conversational response.**
+5.  **CONDITIONAL RULE: If your response immediately follows a message with `role: tool`, you MUST start by directly addressing the user who initiated the request.**
 """
 
 ACKNOWLEDGE_SYSTEM_PROMPT = """## Your Role: AI Acknowledgement Specialist
