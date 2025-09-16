@@ -6,7 +6,8 @@ import httpx
 import logging
 import itertools
 import asyncio
-from typing import Dict, Any
+from typing import Dict, Any, List
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -26,11 +27,14 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 # --- Cache Implementation ---
-# In-memory cache to store the location of tools.
-# Format: {"tool_name": {"url": "http://host:port/rpc", "server_id": 1}}
+# Cache for tool locations to speed up /call
 TOOL_LOCATION_CACHE: Dict[str, Dict[str, Any]] = {}
-# Async lock to prevent race conditions during cache population.
-CACHE_LOCK = asyncio.Lock()
+LOCATION_CACHE_LOCK = asyncio.Lock()
+
+# Cache for full tool definitions to speed up /definitions (for autocomplete)
+DEFINITIONS_CACHE_EXPIRY = timedelta(minutes=5)
+BOT_DEFINITIONS_CACHE: Dict[int, Dict[str, Any]] = {}
+DEFINITIONS_CACHE_LOCK = asyncio.Lock()
 
 
 # --- MCP Client Logic ---
@@ -61,8 +65,8 @@ async def mcp_request(url: str, method: str, params: Dict | None = None, timeout
                 tool_name for tool_name, info in TOOL_LOCATION_CACHE.items() if info['url'] == url
             ]
             if tools_to_invalidate:
-                log.warning(f"Server at {url} seems down. Invalidating cache for tools: {', '.join(tools_to_invalidate)}.")
-                async with CACHE_LOCK:
+                log.warning(f"Server at {url} seems down. Invalidating location cache for tools: {', '.join(tools_to_invalidate)}.")
+                async with LOCATION_CACHE_LOCK:
                     for tool_name in tools_to_invalidate:
                         TOOL_LOCATION_CACHE.pop(tool_name, None)
             raise ToolServerError(f"Tool server at {url} is unavailable.")
@@ -77,6 +81,61 @@ class ToolServerError(Exception):
 def create_error_tool_result(message: str) -> Dict[str, Any]:
     """Creates a standardized tool result dictionary for errors."""
     return {"content": [{"type": "text", "text": message}]}
+
+
+@router.get("/definitions", response_model=List[Dict[str, Any]])
+async def get_tool_definitions(bot_id: int, db: Session = Depends(get_db)):
+    """
+    Retrieves and aggregates all tool definitions from the MCP servers associated with a bot.
+    Results are cached to support features like dynamic command autocompletion.
+    """
+    now = datetime.now(timezone.utc)
+    cached_entry = BOT_DEFINITIONS_CACHE.get(bot_id)
+    if cached_entry and (now - cached_entry["timestamp"]) < DEFINITIONS_CACHE_EXPIRY:
+        log.info(f"Cache hit for tool definitions for bot {bot_id}.")
+        return cached_entry["data"]
+
+    async with DEFINITIONS_CACHE_LOCK:
+        # Double-check cache in case it was populated while waiting for the lock
+        cached_entry = BOT_DEFINITIONS_CACHE.get(bot_id)
+        if cached_entry and (now - cached_entry["timestamp"]) < DEFINITIONS_CACHE_EXPIRY:
+            return cached_entry["data"]
+
+        bot = crud_bots.get_bot(db, bot_id=bot_id)
+        if not bot:
+            raise HTTPException(status_code=404, detail=f"Bot with ID {bot_id} not found.")
+
+        tasks = []
+        server_urls = []
+        if bot.mcp_server_associations:
+            for association in bot.mcp_server_associations:
+                server = association.mcp_server
+                if not server or not server.enabled:
+                    continue
+                server_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}"
+                server_urls.append(server_url)
+                tasks.append(mcp_request(server_url, "tools/list", timeout=5.0))
+        
+        if not tasks:
+            return []
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        successful_results = []
+        for i, res in enumerate(results):
+            if isinstance(res, Exception):
+                log.error(f"Failed to fetch tool definitions from {server_urls[i]}: {res}")
+                continue
+            if res and isinstance(res.get("result"), dict):
+                tools = res["result"].get("tools", [])
+                successful_results.append(tools)
+
+        all_definitions = list(itertools.chain.from_iterable(successful_results))
+        
+        BOT_DEFINITIONS_CACHE[bot_id] = {"timestamp": now, "data": all_definitions}
+        log.info(f"Cached {len(all_definitions)} tool definitions for bot {bot_id}.")
+        
+        return all_definitions
 
 
 @router.post("/call")
@@ -94,7 +153,7 @@ async def execute_tool_call(request: ToolCallRequest, db: Session = Depends(get_
         target_server_info = TOOL_LOCATION_CACHE.get(request.tool_name)
 
         if not target_server_info:
-            async with CACHE_LOCK:
+            async with LOCATION_CACHE_LOCK:
                 target_server_info = TOOL_LOCATION_CACHE.get(request.tool_name)
                 if not target_server_info:
                     log.info(f"Cache miss for tool '{request.tool_name}'. Starting discovery for bot {bot.id}.")

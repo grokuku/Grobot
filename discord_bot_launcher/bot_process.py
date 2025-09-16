@@ -5,6 +5,7 @@ import asyncio
 import sys
 import requests
 import discord
+from discord import app_commands
 import argparse
 import json
 import traceback
@@ -14,6 +15,7 @@ import io
 import ast
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Tuple
+from types import SimpleNamespace
 
 # --- Constants ---
 DISCORD_MSG_LIMIT = 2000
@@ -29,8 +31,13 @@ DISPATCH_API_URL = None
 ACKNOWLEDGE_API_URL = None
 SYNTHESIZE_API_URL = None
 ARCHIVE_API_URL = None
+TOOLS_DEFINITIONS_URL = None
 GATEKEEPER_HISTORY_LIMIT = 5
 CONVERSATION_HISTORY_LIMIT = 15
+
+# --- Caching for Tool Schemas ---
+TOOL_SCHEMA_CACHE: Dict[str, Any] = {}
+TOOL_SCHEMA_CACHE_EXPIRY = timedelta(minutes=5)
 
 
 def send_log(level: str, source: str, payload: Dict):
@@ -54,6 +61,61 @@ def send_log(level: str, source: str, payload: Dict):
         requests.post(LOGS_API_URL, json=log_entry, timeout=2)
     except Exception as e:
         print(f"[ERROR] [LOG_SUBMISSION] Failed to send log to API: {e}", file=sys.stdout, flush=True)
+
+# --- Tool Schema Discovery for Autocomplete ---
+async def _get_external_tool_definitions() -> List[Dict]:
+    """
+    Fetches tool definitions from the API and caches them.
+    This is necessary for dynamic autocompletion of command parameters.
+    """
+    global TOOL_SCHEMA_CACHE
+    now = datetime.now(timezone.utc)
+
+    if 'data' in TOOL_SCHEMA_CACHE and (now - TOOL_SCHEMA_CACHE.get('timestamp', datetime.fromtimestamp(0, tz=timezone.utc))) < TOOL_SCHEMA_CACHE_EXPIRY:
+        return TOOL_SCHEMA_CACHE['data']
+
+    if not TOOLS_DEFINITIONS_URL:
+        return []
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(TOOLS_DEFINITIONS_URL)
+            response.raise_for_status()
+            definitions = response.json()
+            TOOL_SCHEMA_CACHE = {'data': definitions, 'timestamp': now}
+            return definitions
+    except Exception as e:
+        send_log("error", "tool_definition_fetch_failed", {"error": str(e)})
+        return []
+
+async def _get_choices_for_tool_param(tool_name: str, param_name: str, current_input: str) -> List[app_commands.Choice[str]]:
+    """
+    Generic helper to get autocomplete choices for a specific tool parameter.
+    Handles comma-separated values for multi-selection.
+    """
+    definitions = await _get_external_tool_definitions()
+    tool_def = next((t for t in definitions if t.get("name") == tool_name), None)
+
+    if not tool_def or not (schema := tool_def.get("inputSchema", {}).get("properties", {}).get(param_name)):
+        return []
+
+    # The list of available options, expected in an 'enum' field in the JSON schema.
+    available_choices = schema.get("enum", [])
+    if not available_choices:
+        return []
+
+    # Handle comma-separated input for autocompletion
+    last_part = current_input.split(',')[-1].strip().lower()
+
+    filtered_choices = [
+        choice for choice in available_choices
+        if last_part in choice.lower()
+    ]
+
+    return [
+        app_commands.Choice(name=choice, value=choice)
+        for choice in filtered_choices[:25] # Discord limit
+    ]
 
 # --- Internal & External Tool Handling ---
 def _resolve_user_identifier(guild: discord.Guild, user_identifier: str) -> Optional[discord.Member]:
@@ -371,6 +433,10 @@ class MessageStreamManager:
 
         if not content_to_send: return
 
+        # CRITICAL FIX: Add author citation for slash command responses
+        if isinstance(self.original_message, SimpleNamespace):
+             content_to_send = f"Request from {self.original_message.author.mention}:\n\n{content_to_send}"
+
         try:
             if self.current_message:
                 if self.current_message.content != content_to_send:
@@ -432,7 +498,174 @@ async def send_as_file(channel: discord.TextChannel, code_block: str):
     with io.BytesIO(code.encode('utf-8')) as f:
         await channel.send(file=discord.File(f, filename=f"code_block.{lang or 'txt'}"))
 
-# --- Main Application Logic ---
+# --- Main Application Logic (Global Scope) ---
+
+def _extract_json_objects(json_buffer: str) -> Tuple[str, List[Dict]]:
+    parsed_objects, cursor = [], 0
+    while True:
+        start_index = json_buffer.find('{', cursor)
+        if start_index == -1: break
+        brace_level, end_index = 0, -1
+        for i in range(start_index, len(json_buffer)):
+            if json_buffer[i] == '{': brace_level += 1
+            elif json_buffer[i] == '}': brace_level -= 1
+            if brace_level == 0: end_index = i + 1; break
+        if end_index == -1: break
+        try:
+            data = json.loads(json_buffer[start_index:end_index])
+            parsed_objects.append(data)
+            cursor = end_index
+        except json.JSONDecodeError: cursor = start_index + 1
+    return json_buffer[cursor:], parsed_objects
+
+async def _process_text_with_state_machine(
+    text_to_process: str, parsing_mode: str, code_block_buffer: str, stream_manager: MessageStreamManager,
+) -> Tuple[str, str]:
+    while text_to_process:
+        if parsing_mode == 'text':
+            think_pos, code_pos = text_to_process.find('<think>'), text_to_process.find('```')
+            if think_pos != -1 and (code_pos == -1 or think_pos < code_pos):
+                await stream_manager.add_text(text_to_process[:think_pos])
+                text_to_process = text_to_process[think_pos + len('<think>'):]; parsing_mode = 'think'
+            elif code_pos != -1 and (think_pos == -1 or code_pos < think_pos):
+                await stream_manager.add_text(text_to_process[:code_pos]); await stream_manager.finalize()
+                text_to_process = text_to_process[code_pos + len('```'):]; parsing_mode = 'code'
+            else:
+                await stream_manager.add_text(text_to_process); text_to_process = ""
+        elif parsing_mode == 'think':
+            end_think_pos = text_to_process.find('</think>')
+            if end_think_pos != -1: text_to_process = text_to_process[end_think_pos + len('</think>'):]; parsing_mode = 'text'
+            else: text_to_process = ""
+        elif parsing_mode == 'code':
+            end_code_pos = text_to_process.find('```')
+            if end_code_pos != -1:
+                code_block_buffer += text_to_process[:end_code_pos]
+                await send_as_file(stream_manager.channel, f"```{code_block_buffer}```"); code_block_buffer = ""
+                text_to_process = text_to_process[end_code_pos + len('```'):]; parsing_mode = 'text'
+            else: code_block_buffer += text_to_process; text_to_process = ""
+        else: text_to_process = ""
+    return parsing_mode, code_block_buffer
+
+async def call_archivist(chat_context_payload: Dict, final_bot_response: str):
+    if not final_bot_response.strip() or not ARCHIVE_API_URL: return
+    payload = {"chat_context": chat_context_payload, "final_bot_response": final_bot_response}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            await client.post(ARCHIVE_API_URL, json=payload)
+    except Exception as e:
+        send_log("error", "archivist_call_failed", {"error": str(e)})
+
+async def _download_image_to_discord_file(image_url: str) -> Tuple[Optional[discord.File], Optional[str]]:
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as http_client:
+            img_response = await http_client.get(image_url)
+            img_response.raise_for_status()
+            file_object = discord.File(io.BytesIO(img_response.content), filename=image_url.split('/')[-1])
+            return file_object, None
+    except Exception as img_exc:
+        error_msg = f"Failed to retrieve the image from {image_url}."
+        send_log("error", "image_download_failed", {"url": image_url, "error": str(img_exc)})
+        return None, error_msg
+
+async def execute_tools_and_synthesize(client: discord.Client, message: discord.Message, local_history: List[Dict], base_payload: Dict, tool_calls: List[Dict]):
+    """Handles tool execution, synthesis, and final response sending."""
+    files_to_attach: List[discord.File] = []
+    synthesizer_payload, final_response, cleaned_final_response = {}, "", ""
+
+    try:
+        if tool_calls:
+            assistant_tool_call_msg = {"role": "assistant", "content": "", "tool_calls": tool_calls}
+            local_history.append(assistant_tool_call_msg)
+            
+            raw_tool_results = await asyncio.gather(*[_dispatch_tool_call(call, message) for call in tool_calls])
+            
+            images_found = 0
+            for i, call in enumerate(tool_calls):
+                raw_result_str, text_parts, has_media_output = raw_tool_results[i], [], False
+                try:
+                    content_list = json.loads(raw_result_str).get("content", [])
+                    for block in content_list:
+                        image_url, text_content = None, None
+                        
+                        if block.get("type") == "image" and block.get("source"):
+                            image_url = block["source"]
+                        elif block.get("type") == "text" and block.get("text"):
+                            text_content = str(block["text"])
+
+                        # Logic to handle image URLs and download them
+                        if image_url or (text_content and re.match(r'^https?://.*\.(png|jpg|jpeg|webp|gif)$', text_content.strip(), re.IGNORECASE)):
+                            url_to_download = image_url or text_content.strip()
+                            images_found += 1
+                            has_media_output = True
+                            image_file, error_msg = await _download_image_to_discord_file(url_to_download)
+                            if image_file:
+                                files_to_attach.append(image_file)
+                            if error_msg:
+                                text_parts.append(error_msg)
+                            # CRITICAL FIX: If the text content was just a URL, do not add it to the text parts.
+                            if text_content and url_to_download == text_content.strip():
+                                continue # Skip to the next block in content_list
+
+                        if text_content:
+                            parsed_error = _try_parse_error_from_tool_text(text_content)
+                            if parsed_error:
+                                text_parts.append(parsed_error)
+                                send_log("warning", "tool_returned_error", {"tool_name": call.get("function", {}).get("name"), "error": parsed_error})
+                            else:
+                                text_parts.append(text_content)
+                except (json.JSONDecodeError, AttributeError):
+                        text_parts.append(str(raw_result_str))
+                
+                tool_content_result = "\n".join(text_parts).strip()
+                if has_media_output and not tool_content_result:
+                    tool_content_result = "[An image was generated and will be displayed with the final message.]"
+                elif not tool_content_result:
+                    tool_content_result = "[Tool executed successfully with no textual output.]"
+
+                local_history.append({ "role": "tool", "content": tool_content_result })
+            
+            send_log("info", "tool_execution_complete", {"count": len(tool_calls), "images": images_found})
+
+        stream_manager = MessageStreamManager(message, client, files=files_to_attach)
+        send_log("info", "synthesizer_call_preparation", {"history_len": len(local_history)})
+        synthesizer_payload = {
+            "bot_id": base_payload["bot_id"],
+            "messages": local_history,
+            "user_context": base_payload["user_context"],
+            "channel_context": base_payload["channel_context"]
+        }
+
+        json_buffer, text_buffer, code_buffer, parsing_mode = "", "", "", "text"
+        async with httpx.AsyncClient(timeout=300.0) as http_client, http_client.stream("POST", SYNTHESIZE_API_URL, json=synthesizer_payload) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_text():
+                json_buffer += chunk
+                json_buffer, parsed_objects = _extract_json_objects(json_buffer)
+                for data in parsed_objects:
+                    if "error" in data: raise Exception(data["error"])
+                    if content := data.get("message", {}).get("content"):
+                        final_response += content; text_buffer += content
+                if (last_nl := text_buffer.rfind('\n')) != -1:
+                    text_now, text_buffer = text_buffer[:last_nl + 1], text_buffer[last_nl + 1:]
+                    parsing_mode, code_buffer = await _process_text_with_state_machine(text_now, parsing_mode, code_buffer, stream_manager)
+
+        if text_buffer: _, code_buffer = await _process_text_with_state_machine(text_buffer, parsing_mode, code_buffer, stream_manager)
+        if code_buffer: await send_as_file(stream_manager.channel, f"```{code_buffer}```")
+
+        await stream_manager.finalize()
+
+        if final_response.strip():
+            cleaned_final_response = re.sub(r'<think>.*?</think>', '', final_response, flags=re.DOTALL).strip()
+            if cleaned_final_response:
+                local_history.append({"role": "assistant", "content": cleaned_final_response})
+        
+        chat_histories[message.channel.id] = local_history
+
+    finally:
+        if synthesizer_payload and cleaned_final_response:
+            asyncio.create_task(call_archivist(synthesizer_payload, cleaned_final_response))
+        send_log("info", "turn_complete", {"channel_id": message.channel.id})
+
 async def _get_formatted_channel_history(channel: discord.abc.Messageable, limit: int) -> List[str]:
     if limit <= 0: return []
     history_messages = []
@@ -510,177 +743,151 @@ def _try_parse_error_from_tool_text(text: str) -> Optional[str]:
         return None
     return None
 
-def create_discord_client():
-    intents = discord.Intents.default()
-    intents.message_content = True
-    intents.members = True
-    client = discord.Client(intents=intents)
+def _normalize_tool_calls(tool_calls: List[Dict]) -> List[Dict]:
+    """
+    Ensures that all tool call dictionaries in a list follow the
+    {'function': {'name': ..., 'arguments': ...}} format for consistency.
+    Handles cases where the dispatcher might return a flatter {'name': ..., 'arguments': ...} structure.
+    """
+    if not isinstance(tool_calls, list):
+        return []
 
-    def _extract_json_objects(json_buffer: str) -> Tuple[str, List[Dict]]:
-        parsed_objects, cursor = [], 0
-        while True:
-            start_index = json_buffer.find('{', cursor)
-            if start_index == -1: break
-            brace_level, end_index = 0, -1
-            for i in range(start_index, len(json_buffer)):
-                if json_buffer[i] == '{': brace_level += 1
-                elif json_buffer[i] == '}': brace_level -= 1
-                if brace_level == 0: end_index = i + 1; break
-            if end_index == -1: break
-            try:
-                data = json.loads(json_buffer[start_index:end_index])
-                parsed_objects.append(data)
-                cursor = end_index
-            except json.JSONDecodeError: cursor = start_index + 1
-        return json_buffer[cursor:], parsed_objects
+    normalized_calls = []
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            continue
 
-    async def _process_text_with_state_machine(
-        text_to_process: str, parsing_mode: str, code_block_buffer: str, stream_manager: MessageStreamManager,
-    ) -> Tuple[str, str]:
-        while text_to_process:
-            if parsing_mode == 'text':
-                think_pos, code_pos = text_to_process.find('<think>'), text_to_process.find('```')
-                if think_pos != -1 and (code_pos == -1 or think_pos < code_pos):
-                    await stream_manager.add_text(text_to_process[:think_pos])
-                    text_to_process = text_to_process[think_pos + len('<think>'):]; parsing_mode = 'think'
-                elif code_pos != -1 and (think_pos == -1 or code_pos < think_pos):
-                    await stream_manager.add_text(text_to_process[:code_pos]); await stream_manager.finalize()
-                    text_to_process = text_to_process[code_pos + len('```'):]; parsing_mode = 'code'
-                else:
-                    await stream_manager.add_text(text_to_process); text_to_process = ""
-            elif parsing_mode == 'think':
-                end_think_pos = text_to_process.find('</think>')
-                if end_think_pos != -1: text_to_process = text_to_process[end_think_pos + len('</think>'):]; parsing_mode = 'text'
-                else: text_to_process = ""
-            elif parsing_mode == 'code':
-                end_code_pos = text_to_process.find('```')
-                if end_code_pos != -1:
-                    code_block_buffer += text_to_process[:end_code_pos]
-                    await send_as_file(stream_manager.channel, f"```{code_block_buffer}```"); code_block_buffer = ""
-                    text_to_process = text_to_process[end_code_pos + len('```'):]; parsing_mode = 'text'
-                else: code_block_buffer += text_to_process; text_to_process = ""
-            else: text_to_process = ""
-        return parsing_mode, code_block_buffer
-    async def call_archivist(chat_context_payload: Dict, final_bot_response: str):
-        if not final_bot_response.strip() or not ARCHIVE_API_URL: return
-        payload = {"chat_context": chat_context_payload, "final_bot_response": final_bot_response}
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                await client.post(ARCHIVE_API_URL, json=payload)
-        except Exception as e:
-            send_log("error", "archivist_call_failed", {"error": str(e)})
-
-    async def _download_image_to_discord_file(image_url: str) -> Tuple[Optional[discord.File], Optional[str]]:
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as http_client:
-                img_response = await http_client.get(image_url)
-                img_response.raise_for_status()
-                file_object = discord.File(io.BytesIO(img_response.content), filename=image_url.split('/')[-1])
-                return file_object, None
-        except Exception as img_exc:
-            error_msg = f"Failed to retrieve the image from {image_url}."
-            send_log("error", "image_download_failed", {"url": image_url, "error": str(img_exc)})
-            return None, error_msg
-
-    async def execute_tools_and_synthesize(message: discord.Message, local_history: List[Dict], base_payload: Dict, tool_calls: List[Dict]):
-        """Handles tool execution, synthesis, and final response sending."""
-        files_to_attach: List[discord.File] = []
-        synthesizer_payload, final_response, cleaned_final_response = {}, "", ""
-
-        try:
-            if tool_calls:
-                assistant_tool_call_msg = {"role": "assistant", "content": "", "tool_calls": tool_calls}
-                local_history.append(assistant_tool_call_msg)
-                
-                raw_tool_results = await asyncio.gather(*[_dispatch_tool_call(call, message) for call in tool_calls])
-                
-                images_found = 0
-                for i, call in enumerate(tool_calls):
-                    raw_result_str, text_parts, has_media_output = raw_tool_results[i], [], False
-                    try:
-                        content_list = json.loads(raw_result_str).get("content", [])
-                        for block in content_list:
-                            image_url, text_content = None, None
-                            
-                            if block.get("type") == "image" and block.get("source"):
-                                image_url = block["source"]
-                            elif block.get("type") == "text" and block.get("text"):
-                                text_content = str(block["text"])
-                                # Robustness: Check if text content is actually an image URL
-                                if re.match(r'^https?://.*\.(png|jpg|jpeg|webp|gif)$', text_content.strip(), re.IGNORECASE):
-                                    image_url = text_content.strip()
-
-                            if image_url:
-                                images_found += 1
-                                has_media_output = True
-                                image_file, error_msg = await _download_image_to_discord_file(image_url)
-                                if image_file:
-                                    files_to_attach.append(image_file)
-                                if error_msg:
-                                    text_parts.append(error_msg)
-                            
-                            if text_content and not image_url: # Process text only if it wasn't treated as an image URL
-                                parsed_error = _try_parse_error_from_tool_text(text_content)
-                                if parsed_error:
-                                    text_parts.append(parsed_error)
-                                    send_log("warning", "tool_returned_error", {"tool_name": call.get("function", {}).get("name"), "error": parsed_error})
-                                else:
-                                    text_parts.append(text_content)
-                    except (json.JSONDecodeError, AttributeError):
-                            text_parts.append(str(raw_result_str))
-                    
-                    tool_content_result = "\n".join(text_parts).strip()
-                    if has_media_output and not tool_content_result:
-                        tool_content_result = "[An image was generated and will be displayed with the final message.]"
-                    elif not tool_content_result:
-                        tool_content_result = "[Tool executed successfully with no textual output.]"
-
-                    local_history.append({ "role": "tool", "content": tool_content_result })
-                
-                send_log("info", "tool_execution_complete", {"count": len(tool_calls), "images": images_found})
-
-            stream_manager = MessageStreamManager(message, client, files=files_to_attach)
-            send_log("info", "synthesizer_call_preparation", {"history_len": len(local_history)})
-            synthesizer_payload = {
-                "bot_id": base_payload["bot_id"],
-                "messages": local_history,
-                "user_context": base_payload["user_context"],
-                "channel_context": base_payload["channel_context"]
+        if "function" in call and "name" in call.get("function", {}):
+            # Already in the correct format
+            normalized_calls.append(call)
+        elif "name" in call and "arguments" in call:
+            # This is the alternative, flatter format. Normalize it.
+            send_log("warning", "tool_call_normalization", {"original_format": call})
+            normalized_call = {
+                "function": {
+                    "name": call["name"],
+                    "arguments": call["arguments"]
+                }
             }
+            normalized_calls.append(normalized_call)
+    return normalized_calls
 
-            json_buffer, text_buffer, code_buffer, parsing_mode = "", "", "", "text"
-            async with httpx.AsyncClient(timeout=300.0) as http_client, http_client.stream("POST", SYNTHESIZE_API_URL, json=synthesizer_payload) as response:
-                response.raise_for_status()
-                async for chunk in response.aiter_text():
-                    json_buffer += chunk
-                    json_buffer, parsed_objects = _extract_json_objects(json_buffer)
-                    for data in parsed_objects:
-                        if "error" in data: raise Exception(data["error"])
-                        if content := data.get("message", {}).get("content"):
-                            final_response += content; text_buffer += content
-                    if (last_nl := text_buffer.rfind('\n')) != -1:
-                        text_now, text_buffer = text_buffer[:last_nl + 1], text_buffer[last_nl + 1:]
-                        parsing_mode, code_buffer = await _process_text_with_state_machine(text_now, parsing_mode, code_buffer, stream_manager)
+# --- Discord Client and Command Tree Setup ---
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+client = discord.Client(intents=intents)
+tree = app_commands.CommandTree(client)
 
-            if text_buffer: _, code_buffer = await _process_text_with_state_machine(text_buffer, parsing_mode, code_buffer, stream_manager)
-            if code_buffer: await send_as_file(stream_manager.channel, f"```{code_buffer}```")
+# --- Autocomplete Handlers for /image command ---
+async def style_names_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+    return await _get_choices_for_tool_param('generate_image', 'style_names', current)
 
-            await stream_manager.finalize()
+async def render_type_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+    return await _get_choices_for_tool_param('generate_image', 'render_type', current)
 
-            if final_response.strip():
-                cleaned_final_response = re.sub(r'<think>.*?</think>', '', final_response, flags=re.DOTALL).strip()
-                if cleaned_final_response:
-                    local_history.append({"role": "assistant", "content": cleaned_final_response})
-            
-            chat_histories[message.channel.id] = local_history
+# --- Application Slash Commands ---
+@tree.command(name="image", description="Generates an image using an AI model.")
+@app_commands.describe(
+    prompt="A detailed textual description of the desired image.",
+    negative_prompt="Optional. A description of elements to avoid in the image.",
+    style_names="Optional. Styles to apply, separated by commas. Start typing to see available styles.",
+    aspect_ratio="Optional. The desired aspect ratio for the image.",
+    render_type="Optional. A specific render workflow to use. Start typing to see options.",
+    enhance_prompt="Optional. If true, an LLM will enhance the prompt before generation (default: True)."
+)
+@app_commands.choices(aspect_ratio=[
+    app_commands.Choice(name="Square (1:1)", value="1:1"),
+    app_commands.Choice(name="Widescreen (16:9)", value="16:9"),
+    app_commands.Choice(name="Portrait (9:16)", value="9:16"),
+    app_commands.Choice(name="Landscape (4:3)", value="4:3"),
+    app_commands.Choice(name="Tall (3:4)", value="3:4"),
+])
+@app_commands.autocomplete(style_names=style_names_autocomplete)
+@app_commands.autocomplete(render_type=render_type_autocomplete)
+async def image(
+    interaction: discord.Interaction,
+    prompt: str,
+    negative_prompt: Optional[str] = None,
+    style_names: Optional[str] = None,
+    aspect_ratio: Optional[str] = None,
+    render_type: Optional[str] = None,
+    enhance_prompt: Optional[bool] = True
+):
+    try:
+        await interaction.response.defer(thinking=False, ephemeral=True)
 
-        finally:
-            if synthesizer_payload and cleaned_final_response:
-                asyncio.create_task(call_archivist(synthesizer_payload, cleaned_final_response))
-            send_log("info", "turn_complete", {"channel_id": message.channel.id})
+        # Step 1: Build arguments and format the command for the history
+        arguments = {"prompt": prompt}
+        history_prompt_parts = [f'/image prompt: "{prompt}"']
+        if negative_prompt:
+            arguments["negative_prompt"] = negative_prompt
+            history_prompt_parts.append(f'negative_prompt: "{negative_prompt}"')
+        if style_names:
+            arguments["style_names"] = [s.strip() for s in style_names.split(',') if s.strip()]
+            history_prompt_parts.append(f'style_names: "{style_names}"')
+        if aspect_ratio:
+            arguments["aspect_ratio"] = aspect_ratio
+            history_prompt_parts.append(f'aspect_ratio: "{aspect_ratio}"')
+        if render_type:
+            arguments["render_type"] = render_type
+            history_prompt_parts.append(f'render_type: "{render_type}"')
+        if enhance_prompt is False:
+            arguments["enhance_prompt"] = False
+            history_prompt_parts.append(f'enhance_prompt: "False"')
+
+        # Step 2: Send an acknowledgement message generated by the LLM
+        user_context = {"discord_id": str(interaction.user.id), "name": interaction.user.name, "display_name": interaction.user.display_name}
+        ack_payload = {"bot_id": BOT_ID, "user_context": user_context, "tool_name": "generate_image"}
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as http_client:
+                ack_res = await http_client.post(ACKNOWLEDGE_API_URL, json=ack_payload)
+                if ack_res.is_success:
+                    await interaction.followup.send(ack_res.json().get("acknowledgement_message", "Got it. Starting image generation..."), ephemeral=True)
+                else:
+                    await interaction.followup.send("Got it. Starting image generation...", ephemeral=True)
+        except Exception:
+            await interaction.followup.send("Got it. Starting image generation...", ephemeral=True)
+
+
+        # Step 3: Prepare the payload for the main execution engine
+        tool_calls = [{"function": {"name": "generate_image", "arguments": arguments}}]
+        local_history = [{"role": "user", "content": f"[{interaction.user.display_name}]: {' '.join(history_prompt_parts)}"}]
+
+        channel_context = {"context_type": "DIRECT_MESSAGE", "channel_id": str(interaction.channel_id)}
+        if interaction.guild:
+            channel_context.update({"context_type": "SERVER_CHANNEL", "server_id": str(interaction.guild.id), "server_name": interaction.guild.name, "channel_name": interaction.channel.name})
+
+        base_payload = {"bot_id": BOT_ID, "messages": local_history, "user_context": user_context, "channel_context": channel_context}
+
+        # Create a shim object that mimics discord.Message for compatibility
+        message_shim = SimpleNamespace(
+            id=interaction.id,
+            channel=interaction.channel,
+            author=interaction.user,
+            guild=interaction.guild,
+            content=' '.join(history_prompt_parts),
+            attachments=[],
+            # Add reply method to the shim to avoid errors if called, though it shouldn't be for slash commands
+            reply=interaction.channel.send
+        )
+
+        # Step 4: Delegate the entire execution to the robust, existing pipeline
+        await execute_tools_and_synthesize(client, message_shim, local_history, base_payload, tool_calls)
+
+    except Exception as e:
+        send_log("error", "slash_command_error", {"command": "image", "error": str(e), "traceback": traceback.format_exc()})
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Sorry, a critical error occurred.", ephemeral=True)
+        else:
+            await interaction.followup.send("Sorry, a critical error occurred.", ephemeral=True)
+
+def create_discord_client():
     
     @client.event
-    async def on_ready(): send_log("info", "process_status", {"status": "online", "discord_user": str(client.user)})
+    async def on_ready():
+        await tree.sync()
+        send_log("info", "process_status", {"status": "online", "discord_user": str(client.user)})
 
     @client.event
     async def on_message(message: discord.Message):
@@ -741,6 +948,18 @@ def create_discord_client():
             
             tool_calls = dispatch_decision.get("tool_calls") if isinstance(dispatch_decision, dict) else None
 
+            # --- START BUG FIX: Handle tool_calls being a JSON string instead of a list ---
+            if isinstance(tool_calls, str):
+                try:
+                    tool_calls = json.loads(tool_calls)
+                except json.JSONDecodeError:
+                    send_log("error", "dispatch_json_decode_error", {"raw_tool_calls": tool_calls})
+                    tool_calls = None # Invalidate if parsing fails
+            # --- END BUG FIX ---
+                    # --- Normalize the tool call structure to handle different formats from the LLM ---
+                    if tool_calls:
+                         tool_calls = _normalize_tool_calls(tool_calls)
+
             if tool_calls:
                 is_slow = _is_slow_tool_call(tool_calls)
                 reaction = _get_reaction_for_tools(tool_calls)
@@ -754,12 +973,12 @@ def create_discord_client():
                         if ack_res.is_success:
                             await send_response(message, ack_res.json().get("acknowledgement_message", "..."))
                     
-                    asyncio.create_task(execute_tools_and_synthesize(message, local_history, base_payload, tool_calls))
+                    asyncio.create_task(execute_tools_and_synthesize(client, message, local_history, base_payload, tool_calls))
                 else:
-                    await execute_tools_and_synthesize(message, local_history, base_payload, tool_calls)
+                    await execute_tools_and_synthesize(client, message, local_history, base_payload, tool_calls)
             else:
                 await message.remove_reaction(current_reaction, client.user); current_reaction=None
-                await execute_tools_and_synthesize(message, local_history, base_payload, [])
+                await execute_tools_and_synthesize(client, message, local_history, base_payload, [])
 
         except Exception as e:
             send_log("error", "on_message_error", {"error": str(e), "traceback": traceback.format_exc()})
@@ -790,7 +1009,7 @@ def create_discord_client():
     return client
 
 def main():
-    global BOT_ID, BOT_CONFIG, API_BASE_URL, LOGS_API_URL, GATEKEEPER_API_URL, DISPATCH_API_URL, ACKNOWLEDGE_API_URL, SYNTHESIZE_API_URL, ARCHIVE_API_URL, GATEKEEPER_HISTORY_LIMIT, CONVERSATION_HISTORY_LIMIT
+    global BOT_ID, BOT_CONFIG, API_BASE_URL, LOGS_API_URL, GATEKEEPER_API_URL, DISPATCH_API_URL, ACKNOWLEDGE_API_URL, SYNTHESIZE_API_URL, ARCHIVE_API_URL, TOOLS_DEFINITIONS_URL, GATEKEEPER_HISTORY_LIMIT, CONVERSATION_HISTORY_LIMIT
     parser = argparse.ArgumentParser()
     parser.add_argument("--bot-id", type=int, required=True)
     parser.add_argument("--gatekeeper-history-limit", type=int, default=5)
@@ -805,6 +1024,7 @@ def main():
     ACKNOWLEDGE_API_URL = f"{API_BASE_URL}/chat/acknowledge"
     SYNTHESIZE_API_URL = f"{API_BASE_URL}/chat/"
     ARCHIVE_API_URL = f"{API_BASE_URL}/chat/archive"
+    TOOLS_DEFINITIONS_URL = f"{API_BASE_URL}/tools/definitions?bot_id={BOT_ID}"
 
     send_log("info", "process_status", {"status": "starting"})
     

@@ -57,7 +57,7 @@ RUN chown -R app_user:app_group /app
 
 # Copier et préparer le script de démarrage
 COPY frontend/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh && sed -i 's/\r$//' /entrypoint.sh
 
 # Exposer le port 80 pour Nginx
 EXPOSE 80

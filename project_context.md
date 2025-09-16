@@ -1,6 +1,6 @@
 #### Fichier : project_context.md
 # CONTEXTE MAÎTRE DU PROJET "GroBot"
-#### Date de dernière mise à jour : 2025-09-14
+#### Date de dernière mise à jour : 2025-09-16
 #### Ce fichier sert de référence unique et doit être fourni en intégralité au début de chaque session.
 
 ---
@@ -281,7 +281,16 @@ Chaque outil retourné par `tools/list` **DOIT** suivre le format JSON Schema su
         "properties": {}
     }
 }
-```    ---
+```
+
+### 6.4. Implémentations MCP Connues
+
+Pour garantir l'interopérabilité, GroBot s'appuie sur des serveurs d'outils qui respectent le standard MCP. La documentation de référence pour ces serveurs est essentielle pour comprendre les outils disponibles.
+
+*   **MCP_GenImage:** Service avancé de génération d'images.
+    *   *[Lien vers le project_context.md de MCP_GenImage à insérer ici]*
+
+---
 
 ## 7. Documentation : Flux de Traitement d'un Message (Architecture Asynchrone "Chaîne de Montage")
 
@@ -422,85 +431,59 @@ else:
 
 ## 9. SESSIONS DE DÉVELOPPEMENT (Historique)
 
-*Les sessions antérieures à la 101 sont omises pour la brièveté.*
+*Les sessions antérieures à la 108 sont omises pour la brièveté.*
 
-### 101. Tentative de Résolution de la Régression "Knowledge Base" par Refactorisation (Session du 2025-09-12)
-*   **Résumé :** Cette session a été entièrement consacrée à la résolution de la régression critique de l'onglet "Knowledge Base". Le débogage a suivi un parcours en profondeur à travers toute la pile applicative.
-    1.  **Corrections Frontend :** Les premières tentatives ont corrigé la logique du frontend (`ui.js`, `events.js`) pour s'assurer que le clic sur un utilisateur appelle correctement l'API de recherche avec le bon ID utilisateur. Ces corrections ont fonctionné, mais ont révélé que le backend retournait un résultat vide.
-    2.  **Diagnostic de la Base de Données :** L'analyse des logs a confirmé que l'API recevait la bonne requête mais que la base de données ne trouvait aucun enregistrement correspondant. L'analyse du modèle de données (`sql_models.py`) a révélé la cause racine : un défaut de conception majeur où la table des notes (`UserNote`) n'était pas correctement reliée par une clé étrangère à la table des profils (`UserProfile`).
-    3.  **Refactorisation Majeure :** Une refactorisation complète de la structure de la base de données a été entreprise. Le modèle `sql_models.py` a été corrigé pour introduire une relation propre. Une migration de données complexe avec Alembic a été créée et appliquée pour mettre à jour le schéma existant et lier les anciennes notes aux profils correspondants, en supprimant les données orphelines.
-    4.  **Mise à Jour de la Pile :** Les fichiers de schémas (`user_note_schemas.py`), de logique de base de données (`crud_user_notes.py`) et d'API (`user_profiles_api.py`) ont tous été mis à jour pour utiliser cette nouvelle structure de données, plus simple et plus robuste.
-*   **Résultat :** **ÉCHEC.** Malgré la refactorisation complète et structurellement correcte, le bug initial persiste. Le clic sur un utilisateur dans l'interface résulte toujours en une erreur "User not found", car l'API continue de retourner une liste vide.
-*   **Nouveau Diagnostic :** La refactorisation, bien que bénéfique pour la santé du projet, n'était pas la solution au bug. Le problème est plus subtil et se situe dans l'interaction de bas niveau avec la base de données. Le fait qu'une requête générale pour lister les utilisateurs fonctionne, mais qu'une requête spécifique pour un ID d'utilisateur (pourtant valide et visible) échoue, pointe vers une contradiction logique que les logs actuels n'expliquent pas.
-*   **État Actuel :** La régression de la "Knowledge Base" est **toujours critique et bloquante**. La structure de la base de données est maintenant saine, mais la cause racine du bug reste non identifiée.
+### 108. Implémentation de la Commande Slash `/image` pour la Génération d'Images (Session du 2025-09-15)
+*   **Résumé :** Cette session a été consacrée à l'implémentation d'une commande slash `/image` pour une expérience de génération d'images plus directe et intuitive.
+    1.  **Modification Côté Client (`bot_process.py`) :** La gestion des commandes d'application a été ajoutée. La commande `/image` a été définie avec tous ses paramètres (`prompt`, `negative_prompt`, `aspect_ratio`, etc.). Une fonctionnalité clé, l'**autocomplétion dynamique** pour les `style_names` et `render_type`, a été implémentée pour améliorer l'expérience utilisateur.
+    2.  **Évolution du Backend (`tools_api.py`) :** Pour supporter l'autocomplétion, un nouvel endpoint `GET /api/tools/definitions` a été créé. Cet endpoint découvre dynamiquement les outils disponibles pour un bot en interrogeant tous ses serveurs MCP associés et met les résultats en cache pour des performances optimales.
+    3.  **Mise en Conformité du Serveur d'Outils (`MCP_GenImage`) :** Le mécanisme de découverte a nécessité que le serveur d'outils `MCP_GenImage` expose la liste de ses styles et types de rendu. Son fichier `mcp_routes.py` a été modifié pour injecter dynamiquement ces listes (via la clé `enum`) dans le JSON Schema de l'outil `generate_image`.
+    4.  **Débogage de Bout en Bout :** Plusieurs bugs ont été identifiés et corrigés successivement, allant de la gestion des fins de ligne dans les scripts shell Docker à des erreurs de type (`TypeError`, `AttributeError`), des fautes de syntaxe, et finalement une correction de conformité au protocole MCP pour le format de la réponse image.
+*   **Résultat :** **SUCCÈS.** La commande `/image` est entièrement fonctionnelle. L'autocomplétion dynamique pour les styles et les types de rendu est opérationnelle, et le bot poste correctement l'image générée en pièce jointe dans Discord.
 
-### 102. Résolution de la Régression "Knowledge Base" par Diagnostic Approfondi (Session du 2025-09-12)
-*   **Résumé :** Cette session a repris le débogage de la régression de la "Knowledge Base" en suivant une approche systématique.
-    1.  **Logging SQL et Inspection :** L'activation du logging SQL et l'inspection directe de la base de données via `psql` ont confirmé que les requêtes étaient correctes mais ne retournaient aucun résultat pour les ID spécifiques, bien que les utilisateurs apparaissent dans la liste générale.
-    2.  **Découverte de la Cause Racine :** La comparaison entre l'ID de la requête API échouée et les données réelles de la base de données a révélé une corruption de l'ID. La cause a été identifiée comme une limitation de JavaScript (`Number.MAX_SAFE_INTEGER`), qui ne peut pas représenter de manière fiable les ID 64-bit de Discord et les arrondit lors du parsing JSON.
-    3.  **Correction Multi-Niveaux :** Une correction complète a été appliquée sur toute la pile applicative pour traiter les ID Discord comme des chaînes de caractères (`String`) et non des nombres (`Integer`). Cela a impliqué :
-        *   La modification des schémas Pydantic (`user_profile_schemas.py`, `user_note_schemas.py`) pour passer le type de `int` à `str`.
-        *   La modification des modèles SQLAlchemy (`sql_models.py`) pour changer le type de colonne de `BigInteger` à `String`.
-        *   La génération et l'application d'une migration Alembic pour mettre à jour le schéma de la base de données PostgreSQL (`BIGINT` -> `VARCHAR`).
-        *   La mise à jour de la couche API (`user_profiles_api.py`) et de la couche de données (`crud_user_profiles.py`) pour qu'elles attendent et manipulent les ID comme des `str`.
-*   **Résultat :** **SUCCÈS.** Le bug critique a été entièrement résolu. L'onglet "Knowledge Base" est de nouveau pleinement fonctionnel.
-*   **État Actuel :** La régression est corrigée et la stabilité de la fonctionnalité est restaurée.
-
-### 103. Résolution de la Confusion des Utilisateurs et Finalisation de la Configuration des Outils (Session du 2025-09-12)
-*   **Résumé :** Cette session a abordé deux problèmes distincts.
-    1.  **Finalisation de la Configuration des Outils :** La logique de sauvegarde dans la modale de configuration des outils (`frontend/src/ui.js`) a été complétée. Elle collecte désormais correctement les valeurs des paramètres spécifiques à chaque outil (définis dans leur `inputSchema`) et les enregistre dans l'objet `default_arguments` de la configuration du bot.
-    2.  **Correction de la Confusion des Utilisateurs :** Un bug critique où le bot confondait les interlocuteurs dans une conversation a été diagnostiqué et résolu. La cause racine était un historique de conversation "anonyme" qui n'attribuait pas chaque message à son auteur, rendant le contexte ambigu pour le LLM. La correction a consisté à modifier `discord_bot_launcher/bot_process.py` pour préfixer systématiquement chaque message de l'historique avec le nom de l'auteur (`[DisplayName]: message`), fournissant ainsi un contexte clair et non ambigu au modèle.
-    3.  **Analyse d'un Problème de Fiabilité :** Un décalage horaire ponctuel a été observé. L'analyse a conclu qu'il ne s'agissait pas d'un bug de code mais d'une hallucination mineure et non reproductible du LLM lors de la phase de synthèse de la réponse.
-*   **Résultat :** **SUCCÈS.** Les deux fonctionnalités ciblées sont maintenant pleinement opérationnelles et le comportement du bot dans les conversations multi-utilisateurs est devenu fiable.
-*   **État Actuel :** La base de code est stable. Les principaux bugs critiques ont été résolus.
-
-### 104. Résolution des Conditions de Concurrence sur l'Ensemble de la Pile Applicative (Session du 2025-09-12)
-*   **Résumé :** Suite à un rapport de bug montrant que des requêtes simultanées se mélangeaient ou échouaient, une investigation a révélé deux conditions de concurrence critiques distinctes.
-    1.  **Conflit de Contexte dans GroBot :** Le bot mélangeait les conversations car plusieurs exécutions de `on_message` modifiaient la même référence partagée de l'historique de conversation (`chat_histories`). La correction a consisté à isoler le contexte de chaque requête en travaillant sur une copie locale (`local_history`) dans `discord_bot_launcher/bot_process.py`.
-    2.  **Conflit de Session dans l'Outil d'Image :** Lors de multiples appels à l'outil de génération d'images (`MCP_GenImage`), seule la dernière requête réussissait. La cause était un `clientId` WebSocket partagé dans le serveur d'outil, où chaque nouvelle connexion écrasait la précédente. La correction a consisté à générer un `clientId` unique pour chaque appel d'outil, garantissant des sessions WebSocket isolées.
-*   **Résultat :** **SUCCÈS.** Le système est désormais capable de gérer de multiples requêtes complexes et simultanées de manière robuste et fiable, sans corruption de données ni perte de requêtes.
-*   **État Actuel :** La stabilité du bot face à une charge de travail élevée est significativement améliorée.
-
-### 105. Fiabilisation du Proxy d'Outils par Mise en Cache (Session du 2025-09-12)
-*   **Résumé :** Un bug subtil a été découvert où une seconde requête concurrente à un outil pouvait échouer. L'analyse a révélé que la cause n'était pas un cache défectueux, mais l'absence de cache : le proxy d'outils (`app/api/tools_api.py`) effectuait une découverte réseau (`tools/list`) coûteuse et fragile à chaque appel d'outil. Sous une charge concurrente, ce processus de découverte échouait silencieusement pour la seconde requête, l'empêchant d'être exécutée.
-*   **Correction :** Le fichier `app/api/tools_api.py` a été refactorisé pour inclure un cache en mémoire simple. L'emplacement d'un outil est maintenant découvert via le réseau une seule fois, puis stocké dans le cache. Les appels suivants utilisent l'emplacement mis en cache, ce qui élimine la découverte redondante et rend le proxy à la fois plus rapide et plus fiable.
-*   **Résultat :** **SUCCÈS.** Le bug des "appels d'outils perdus" est résolu. La performance et la robustesse du proxy d'outils sont grandement améliorées.
-
-### 106. Tentative de Fiabilisation du Proxy d'Outils et Rollback (Session du 2025-09-12)
-*   **Résumé :** Suite à la correction de la Session 105, une régression critique est apparue : le bot ne répondait plus dans les salons publics, bien qu'il fonctionnait encore en messages privés. Après plusieurs diagnostics erronés, il a été déterminé que la refactorisation du proxy d'outils (`app/api/tools_api.py`) avait incorrectement mélangé des appels de base de données synchrones avec des opérations réseau asynchrones. Cela provoquait un blocage silencieux (deadlock) de l'API lorsqu'elle était sollicitée par le Gatekeeper (utilisé uniquement pour les messages de salon).
-*   **Résultat :** **ROLLBACK.** Pour restaurer immédiatement la stabilité de l'application, la décision a été prise d'annuler toutes les modifications apportées à `app/api/tools_api.py` et de revenir à la version antérieure fonctionnelle (celle de la fin de la Session 104). Le bug de non-réponse dans les salons est résolu, mais le problème d'inefficacité du proxy d'outils persiste.
-*   **État Actuel :** L'application est de nouveau stable. Le bug initial qui a motivé la Session 105 est de nouveau un problème connu et actif.
-
-### 107. Unification des Réponses d'Images et Correction de la Conformité MCP (Session du 2025-09-14)
-*   **Résumé :** Cette session a corrigé un problème majeur d'expérience utilisateur où le bot envoyait une image générée dans un message séparé de sa réponse textuelle. Une régression qui transformait l'image en simple lien a également été traitée.
-    1.  **Correction Côté Client (`GroBot`) :** La logique de `discord_bot_launcher/bot_process.py` a été refactorisée. Au lieu d'envoyer l'image immédiatement, le bot télécharge désormais les fichiers en mémoire et les passe au `MessageStreamManager`. Ce dernier a été amélioré pour pouvoir attacher tous les fichiers collectés au premier morceau de la réponse streamée, garantissant un message unique et unifié. Une logique de détection d'URL d'image dans les réponses textuelles a été ajoutée pour plus de robustesse.
-    2.  **Correction Côté Serveur (`MCP_GenImage`) :** Le serveur d'outils de génération d'images a été mis en conformité avec le standard MCP. Sa réponse `tools/call` retourne maintenant `"content"` sous forme d'une liste `[{"type": "image", ...}]` au lieu d'un objet simple, corrigeant la source de la régression.
-*   **Résultat :** **SUCCÈS.** Le bot envoie désormais une réponse unique et cohérente contenant à la fois le texte final et l'image en tant que pièce jointe. Le comportement est fiable et l'expérience utilisateur est grandement améliorée.
+### 109. Intégration d'un Nouvel Outil Externe et Amélioration de l'Expérience Utilisateur (Session du 2025-09-16)
+*   **Résumé :** Cette session a été consacrée à l'intégration d'un outil externe (`MCP-Contest`) et à la résolution de plusieurs problèmes d'expérience utilisateur liés à la commande `/image`.
+    1.  **Intégration et Débogage de l'Outil Externe :** L'intégration d'un nouvel outil MCP a révélé plusieurs bugs successifs dans le client `bot_process.py`. Une erreur `404 Not Found` a d'abord indiqué une faute de frappe dans l'URL du serveur MCP. Ensuite, des erreurs de type (`TypeError`, `KeyError`) ont montré que la réponse du LLM Répartiteur pour ce nouvel outil n'était pas dans le format standard attendu. Le code a été fiabilisé pour parser correctement la réponse (même si elle est une chaîne JSON) et pour normaliser la structure des appels d'outils, rendant le client résilient à des formats de réponse LLM légèrement différents.
+    2.  **Amélioration de l'Expérience de la Commande `/image` :** Une discussion approfondie a eu lieu pour rendre les réponses à la commande `/image` plus naturelles et cohérentes.
+        *   **Problème 1 (Message d'Attente) :** Le message "Okay, let me get started..." a été identifié comme étant générique, en anglais et ne respectant pas la personnalité du bot. La cause est un prompt statique utilisé par l'**Acknowledge-Synthesizer**.
+        *   **Problème 2 (Mention de l'Utilisateur) :** La mention "Request from @User" a été jugée non naturelle. Une première suggestion de la supprimer a été écartée car elle recréait le problème initial (aucune mention). Une seconde suggestion de toujours mentionner l'utilisateur a été écartée car elle serait trop répétitive.
+        *   **Solution finale retenue :** Une approche contextuelle a été conçue. L'instruction système du **Synthétiseur (côté `agent_logic.py`)** sera modifiée pour n'exiger une mention de l'utilisateur que si sa réponse suit immédiatement l'exécution d'un outil (`role: tool`). De plus, le contexte de la commande `/image` envoyé au LLM **(côté `bot_process.py`)** sera transformé d'une commande brute en une phrase conversationnelle pour encourager une réponse naturelle.
+        *   **Problème 3 (URL Redondante) :** La présence de l'URL de l'image dans le texte de la réponse a été jugée superflue. La solution retenue est de filtrer la sortie de l'outil **(côté `bot_process.py`)** pour ne jamais inclure une URL d'image dans le contenu textuel passé au Synthétiseur.
+*   **Résultat :** **SUCCÈS.** L'outil externe est maintenant fonctionnel. Une solution complète et robuste a été conçue pour améliorer radicalement l'expérience utilisateur de la commande `/image`, bien qu'elle n'ait pas encore été implémentée.
+*   **État Actuel :** La base de code est stable. L'intégration d'outils est maintenant plus robuste. Un plan d'action clair existe pour la prochaine session.
 
 ---
 
 ## 10. État Actuel et Plan d'Action
 
 ### État Actuel (Bugs Connus et Statut)
+*   **CORRIGÉ (Intégration d'Outils) :** Le client `bot_process.py` a été fiabilisé pour gérer différents formats de réponse du LLM Répartiteur, rendant l'ajout de nouveaux outils plus robuste. (Session 109)
 *   **CORRIGÉ (Réponses d'Images Unifiées) :** Le bot envoie désormais les images et le texte dans un message unique et cohérent. (Session 107)
-*   **CORRIGÉ (Conditions de Concurrence) :** Les requêtes multiples, y compris les appels à des outils lents comme la génération d'images, sont désormais gérées de manière fiable et simultanée. Les contextes de conversation sont isolés (`bot_process.py`) et les appels d'outils externes ont des sessions uniques (`MCP_GenImage`), empêchant les interférences. (Session 104)
-*   **CORRIGÉ (Confusion des Utilisateurs) :** Le bot identifie et répond désormais correctement aux différents utilisateurs dans une conversation. (Session 103)
-*   **CORRIGÉ (Sauvegarde de la Configuration des Outils) :** La logique de sauvegarde des arguments par défaut des outils dans `ui.js` est fonctionnelle. (Session 103)
+*   **CORRIGÉ (Conditions de Concurrence) :** Les requêtes multiples sont gérées de manière fiable et simultanée. (Session 104)
+*   **CORRIGÉ (Confusion des Utilisateurs) :** Le bot identifie et répond correctement aux différents utilisateurs. (Session 103)
 *   **CORRIGÉ (Régression de la Knowledge Base) :** La sélection d'un utilisateur est de nouveau fonctionnelle. (Session 102)
-*   **NOUVEAU / FAIBLE (Appels d'Outils Répétés) :** Une seconde requête concurrente à un outil (ex: 'refaire une image') peut échouer silencieusement. La cause est que le proxy d'outils (`app/api/tools_api.py`) effectue une découverte réseau (`tools/list`) fragile et inefficace à chaque appel, qui peut échouer sous une charge concurrente. (Bug identifié en Session 105, ré-ouvert après le rollback de la Session 106).
-*   **TRÈS FAIBLE (Fiabilité du LLM) :** Le LLM peut occasionnellement faire des erreurs mineures et non reproductibles. Classé comme un problème inhérent au modèle et non comme un bug du code.
+*   **NOUVEAU / AMÉLIORATION (Incohérence de la Personnalité / Langue) :** Les messages liés à la commande `/image` (message d'attente, réponse finale) sont génériques, en anglais, et ne respectent pas la personnalité du bot. La mention de l'utilisateur est codée en dur. (Identifié en Session 109)
+*   **NOUVEAU / AMÉLIORATION (URL d'Image Redondante) :** La réponse finale à une génération d'image contient parfois un lien vers l'image, en plus de la pièce jointe. (Identifié en Session 109)
+*   **NOUVEAU / FAIBLE (Appels d'Outils Répétés) :** Une seconde requête concurrente à un outil peut échouer silencieusement. (Bug identifié en Session 105, ré-ouvert après le rollback de la Session 106).
 *   **FAIBLE (Fiabilité de l'Interface de Test) :** Les outils ne fonctionnent pas lorsqu'ils sont appelés depuis la fenêtre de test du frontend.
 *   **FAIBLE (CRUD des Bots) :** La suppression d'un bot depuis l'interface est impossible.
 
 ### Nouveau Plan d'Action (Priorités)
 
-1.  **PRIO 1 (Fiabilisation de l'Interface de Test) :**
-    *   Isoler et corriger la cause du non-fonctionnement des outils dans l'interface de test. Cela implique probablement de vérifier comment le contexte (serveur, utilisateur) est simulé lors de l'appel aux API depuis `events.js` ou `ui.js`.
+1.  **PRIO 1 (Amélioration de la Cohérence de la Personnalité) :**
+    *   **Objectif :** Rendre toutes les interactions du bot, en particulier celles liées à la commande `/image`, naturelles, en français (ou la langue de la personnalité), et cohérentes.
+    *   **Actions :**
+        1.  **Backend (`app/core/agent_logic.py`) :** Modifier la logique de l'**Acknowledge-Synthesizer** pour qu'elle injecte la personnalité du bot dans son prompt, afin de générer un message d'attente personnalisé.
+        2.  **Backend (`app/core/agent_logic.py`) :** Modifier le prompt système du **Synthétiseur** pour y ajouter la règle conditionnelle : "Si ta réponse suit immédiatement un message de `role: tool`, tu dois commencer en t'adressant à l'utilisateur qui a initié la demande."
+        3.  **Client (`discord_bot_launcher/bot_process.py`) :** Dans la fonction de la commande `/image`, modifier la création de l'historique (`local_history`) pour y insérer une phrase descriptive et conversationnelle de l'action de l'utilisateur, au lieu de la commande brute.
+        4.  **Client (`discord_bot_launcher/bot_process.py`) :** Dans `execute_tools_and_synthesize`, filtrer la sortie de l'outil image pour ne jamais passer de texte qui est une URL d'image au Synthétiseur.
+        5.  **Client (`discord_bot_launcher/bot_process.py`) :** Dans la classe `MessageStreamManager`, supprimer le préfixe "Request from..." codé en dur dans la méthode `_execute_edit`.
 
-2.  **PRIO 2 (Finalisation du CRUD des Bots) :**
-    *   Ajouter un bouton de suppression dans l'interface (probablement dans l'onglet "Settings" d'un bot).
-    *   Implémenter la logique dans `events.js` et `api.js` pour appeler l'endpoint `DELETE /api/bots/{bot_id}`.
-    *   Assurer une confirmation de l'utilisateur avant la suppression.
+2.  **PRIO 2 (Fiabilisation de l'Interface de Test) :**
+    *   Isoler et corriger la cause du non-fonctionnement des outils dans l'interface de test.
 
-3.  **PRIO 3 (Refactorisation du Proxy d'Outils) :**
-    *   Ré-aborder la fiabilisation du proxy d'outils (`app/api/tools_api.py`) pour résoudre le bug des appels répétés, en s'assurant cette fois de ne pas introduire de régressions.
+3.  **PRIO 3 (Finalisation du CRUD des Bots) :**
+    *   Ajouter un bouton et la logique de suppression pour un bot depuis l'interface.
+
+4.  **PRIO 4 (Refactorisation du Proxy d'Outils) :**
+    *   Ré-aborder la fiabilisation du proxy d'outils (`app/api/tools_api.py`) pour résoudre le bug des appels répétés.
