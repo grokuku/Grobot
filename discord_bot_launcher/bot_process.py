@@ -1,6 +1,3 @@
-####
-# discord_bot_launcher/bot_process.py
-####
 import asyncio
 import sys
 import requests
@@ -13,6 +10,7 @@ import httpx
 import re
 import io
 import ast
+import websockets # Import for asynchronous tool streaming
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 from types import SimpleNamespace
@@ -352,6 +350,41 @@ INTERNAL_TOOL_IMPLEMENTATIONS = {
     "save_user_note": _tool_save_user_note,
 }
 
+async def _handle_mcp_stream(websocket_url: str) -> Dict:
+    """
+    Connects to an MCP WebSocket stream and listens for the final result.
+    This handles the asynchronous part of a tool call.
+    """
+    try:
+        async with websockets.connect(websocket_url, timeout=300) as websocket:
+            while True:
+                message_str = await websocket.recv()
+                message_data = json.loads(message_str)
+                params = message_data.get("params", {})
+
+                if message_data.get("method") == "stream/chunk":
+                    send_log("info", "mcp_stream_chunk_received", {"stream_id": params.get("stream_id")})
+                    if error_obj := params.get("error"):
+                        # Handle standard JSON-RPC error object
+                        error_message = error_obj.get("message", "Unknown error")
+                        return {"content": [{"type": "text", "text": f"Tool execution failed: {error_message}"}]}
+                    elif result_obj := params.get("result"):
+                        # Handle success object
+                        return {"content": result_obj.get("content", [])}
+                    else:
+                        return {"content": [{"type": "text", "text": "Tool stream chunk was invalid."}]}
+                
+                elif message_data.get("method") == "stream/end":
+                    send_log("info", "mcp_stream_end_received", {"stream_id": params.get("stream_id")})
+                    return {"content": [{"type": "text", "text": "Tool stream ended without providing a result."}]}
+                
+                else:
+                    send_log("warning", "mcp_stream_unknown_message", {"message": message_data})
+
+    except Exception as e:
+        send_log("error", "mcp_stream_connection_error", {"url": websocket_url, "error": str(e)})
+        return {"content": [{"type": "text", "text": f"Failed to connect to or handle the tool stream: {e}"}]}
+
 async def _call_external_tool(tool_call: Dict) -> Dict:
     tool_name = tool_call.get("function", {}).get("name")
     arguments = tool_call.get("function", {}).get("arguments", {})
@@ -370,9 +403,23 @@ async def _call_external_tool(tool_call: Dict) -> Dict:
             response = await client.post(tool_api_url, json=payload)
             response.raise_for_status()
             result = response.json()
-            if isinstance(result, dict) and "content" in result and isinstance(result.get("content"), list):
-                return result
-            return {"content": [{"type": "text", "text": str(result)}]}
+
+            # --- CORRECTED: Asynchronous Tool Streaming Logic (based on new spec) ---
+            if isinstance(result, dict) and result.get("method") == "stream/start":
+                if ws_url := result.get("params", {}).get("ws_url"):
+                    send_log("info", "mcp_stream_start_detected", {"tool_name": tool_name, "ws_url": ws_url})
+                    # Delegate to the WebSocket handler to get the *final* result.
+                    return await _handle_mcp_stream(ws_url)
+            # --- END of Streaming Logic ---
+
+            # Fallback for standard, synchronous tools (often a `result` object)
+            if isinstance(result, dict) and "result" in result:
+                    # Standard JSON-RPC response, extract content from result
+                return {"content": result.get("result", {}).get("content", [{"type": "text", "text": "Tool returned an empty result."}])}
+            
+            send_log("warning", "unknown_tool_response_format", {"tool_name": tool_name, "response": result})
+            return {"content": [{"type": "text", "text": "Tool returned data in an unexpected format."}]}
+
     except httpx.HTTPStatusError as e:
         error_detail = e.response.json().get("detail", e.response.text)
         send_log("error", "external_tool_api_error", {"tool_name": tool_name, "status": e.response.status_code, "detail": error_detail})
@@ -955,7 +1002,7 @@ def create_discord_client():
             # --- END BUG FIX ---
                     # --- Normalize the tool call structure to handle different formats from the LLM ---
                     if tool_calls:
-                         tool_calls = _normalize_tool_calls(tool_calls)
+                            tool_calls = _normalize_tool_calls(tool_calls)
 
             if tool_calls:
                 is_slow = _is_slow_tool_call(tool_calls)
