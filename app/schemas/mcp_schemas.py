@@ -1,6 +1,6 @@
 # Fichier: app/schemas/mcp_schemas.py
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Dict, Any
 import datetime
 
 # --- Base Schemas ---
@@ -53,4 +53,4 @@ class MCPServerAssociationConfig(BaseModel):
     Used as input when updating a bot's tool configuration.
     """
     mcp_server_id: int = Field(..., description="The ID of the MCP server to associate.")
-    configuration: dict = Field(default_factory=dict, description="A JSON object for tool-specific configuration.")
+    configuration: Dict[str, Any] = Field(default_factory=dict, description="A JSON object for tool-specific configuration.")

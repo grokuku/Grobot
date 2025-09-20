@@ -711,9 +711,6 @@
     }
 
     .modal-content {
-    display: flex;
-    flex-direction: column;
-    max-height: 90vh;
         background-color: var(--bg-primary);
         padding: var(--spacing-lg);
         border-radius: var(--radius-lg);
@@ -724,11 +721,7 @@
         animation: slideInFromTop 0.3s ease;
     }
 
-    .modal-content.large {
-        max-width: 900px;
-    }
-
-.close-button {
+    .close-button {
         position: absolute;
         top: var(--spacing-sm);
         right: var(--spacing-md);

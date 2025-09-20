@@ -1,6 +1,6 @@
 #### Fichier : project_context.md
 # CONTEXTE MAÎTRE DU PROJET "GroBot"
-#### Date de dernière mise à jour : 2025-09-19
+#### Date de dernière mise à jour : 2025-09-20
 #### Ce fichier sert de référence unique et doit être fourni en intégralité au début de chaque session.
 
 ---
@@ -474,11 +474,18 @@ else:
 *   **Résultat :** **SUCCÈS.** Le bot est désormais stable sous charge. Les réponses aux générations d'images sont propres, informatives, et ne contiennent plus d'artefacts techniques. Une régression critique a été corrigée.
 *   **État Actuel :** La base de code est stable et les fonctionnalités liées aux outils d'imagerie sont considérées comme matures.
 
+### 113. Correction de l'Expérience Utilisateur et de Régression Critique du Backend (Session du 2025-09-20)
+*   **Résumé :** La session a débuté par la correction d'un bug prioritaire de l'interface utilisateur. La modale de configuration des outils ne permettait pas le défilement et, plus important, son bouton "Sauvegarder" ne déclenchait pas de sauvegarde réelle, créant un flux de travail contre-intuitif. Après une série de corrections qui a mené à une régression critique du backend (une `SyntaxError` dans `bots_api.py` due à une commande `sed` défectueuse), le problème a été résolu de manière méthodique.
+    1.  **Correction de l'Interface :** Le CSS a été corrigé pour permettre le défilement. La logique dans `ui.js` a été revue pour que le bouton de sauvegarde de la modale déclenche un appel API direct et immédiat, rendant le comportement prévisible et intuitif pour l'utilisateur.
+    2.  **Correction de la Régression :** Le fichier `bots_api.py`, qui avait été corrompu et empêchait le serveur de démarrer, a été restauré avec une version complète et correcte, remettant l'application en ligne.
+*   **Résultat :** **SUCCÈS.** L'application est de nouveau stable. Le bug de l'interface de configuration des outils est entièrement résolu, améliorant significativement l'expérience utilisateur pour l'administration des bots.
+
 ---
 
 ## 10. État Actuel et Plan d'Action
 
 ### État Actuel (Bugs Connus et Statut)
+*   **CORRIGÉ (Interface de Configuration des Outils) :** La modale de configuration des outils est désormais fonctionnelle, avec un défilement correct et un flux de sauvegarde immédiat et intuitif. (Session 113)
 *   **CORRIGÉ (Stabilité du Synthétiseur) :** Le Synthétiseur est maintenant fiable sous charge et ne "fuit" plus sa logique interne dans le chat. (Session 112)
 *   **CORRIGÉ (URL d'Image Redondante) :** La réponse finale à une génération d'image ne contient plus de lien URL redondant. (Session 112)
 *   **CORRIGÉ (Régression ChromaDB) :** L'erreur `TypeError` lors de l'interrogation de la mémoire à long terme (LTM) est résolue. (Session 112)

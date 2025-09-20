@@ -343,7 +343,7 @@ function renderBotSettingsPersonalityTab(bot, draftBot, container) {
     container.querySelector('#system-prompt').addEventListener('input', (e) => draftBot.system_prompt = e.target.value);
 }
 
-async function renderBotSettingsToolsTab(bot, draftBot, container) {
+async function renderBotSettingsToolsTab(bot, draftBot, container, saveHandler) {
     container.innerHTML = '<p>Loading tool servers...</p>';
     try {
         const botServerConfigMap = new Map();
@@ -405,7 +405,8 @@ async function renderBotSettingsToolsTab(bot, draftBot, container) {
                 const updateCallback = (newConfig) => {
                     if (serverConfig) {
                         serverConfig.configuration = newConfig;
-                        showToast(`Configuration for ${server.name} updated locally.`, 'success');
+                        saveHandler(bot.id, draftBot);
+                        showToast(`Configuration for ${server.name} has been saved.`, 'success');
                     }
                 };
                 showMcpConfigModal(server, serverConfig.configuration, updateCallback);
@@ -437,7 +438,7 @@ export async function renderBotSettingsForm(bot, container, saveHandler) {
         general: renderBotSettingsGeneralTab,
         llm: renderBotSettingsLlmTab,
         personality: renderBotSettingsPersonalityTab,
-        tools: renderBotSettingsToolsTab
+        tools: (bot, draft, container) => renderBotSettingsToolsTab(bot, draft, container, saveHandler)
     };
     await renderers.general(bot, draftBot, subTabContent);
     container.querySelectorAll('.sub-tab-link').forEach(button => {
@@ -988,20 +989,33 @@ async function showMcpConfigModal(server, currentConfig, saveCallback) {
                 inputSchemaContainer.querySelectorAll('input[name], select[name], textarea[name]').forEach(input => {
                     const argName = input.name;
                     let value;
+                    let shouldSet = true;
+
                     switch (input.type) {
                         case 'checkbox':
                             value = input.checked;
                             break;
                         case 'number':
-                            const num = parseFloat(input.value);
-                            value = isNaN(num) ? null : num;
+                            if (input.value.trim() === '') {
+                                shouldSet = false;
+                            } else {
+                                const num = parseFloat(input.value);
+                                value = isNaN(num) ? null : num;
+                            }
                             break;
                         default:
-                            value = input.value;
+                            if (input.value.trim() === '') {
+                                shouldSet = false;
+                            } else {
+                                value = input.value;
+                            }
                             break;
                     }
-                    toolArguments[argName] = value;
-                    hasToolArguments = true;
+
+                    if (shouldSet) {
+                        toolArguments[argName] = value;
+                        hasToolArguments = true;
+                    }
                 });
             }
 

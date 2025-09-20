@@ -23,6 +23,14 @@ class MCPServerAssociationDetails(MCPServerInDB):
     """
     configuration: Dict[str, Any] = Field(default_factory=dict, description="Configuration JSON for this server on a specific bot.")
 
+# NOUVEAU SCHEMA: Schéma pour la mise à jour des associations MCP d'un bot.
+class BotMCPServerAssociationConfig(BaseModel):
+    """
+    Schema for UPDATING a bot's association with an MCP server.
+    Ensures the configuration payload is a flexible dictionary.
+    """
+    mcp_server_id: int
+    configuration: Dict[str, Any] = Field(default_factory=dict)
 
 
 # --- Schémas pour la gestion des Bots ---
