@@ -2,10 +2,10 @@ import uuid
 import json
 import traceback
 import logging
-import re # ADDED
+import re
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
-from typing import AsyncIterator, List, Dict, Any, Tuple, Union # MODIFIED: Added Union
+from typing import AsyncIterator, List, Dict, Any, Tuple, Union
 import itertools
 import httpx
 
@@ -49,19 +49,19 @@ Analyze the conversation above. Should the bot '{bot_name}' respond to the very 
 ```
 """
 
-## MODIFIÉ : Le prompt du répartiteur est enrichi pour mieux guider le LLM.
 DISPATCHER_SYSTEM_PROMPT = """## Your Role: Tool Dispatcher
 You are a specialized AI model acting as a tool dispatcher. Your SOLE PURPOSE is to analyze the user's message and decide if one or more of the available tools MUST be called to answer it. You do not, under any circumstances, generate a conversational reply. You must understand requests in different languages (like French) and map them to the correct tool.
 
 ## Critical Rules
-1.  **Your ONLY output MUST be a single, valid JSON object.**
-2.  **Tool Priority:** Tools are the absolute source of truth. If the user's request can be fulfilled by a tool, you MUST call it. Your internal knowledge is irrelevant for this task.
-3.  **If a tool is needed:** Your JSON output MUST contain the key "tool_calls" with a list of the required tool calls.
-4.  **If NO tool is needed:** Your JSON output MUST contain the key "tool_calls" with the value `null`.
-5.  **ABSOLUTE PROHIBITION:** Do not output any text, explanation, or conversational filler. Your entire response must be ONLY the JSON object.
+1.  **Your ONLY output MUST be a single, valid JSON object.** Your entire response must start with `{` and end with `}`.
+2.  **No Conversation:** You are forbidden from responding to the user. You must act as a silent router. If the user says "hello", you must not say "hello" back. Your only job is to determine if a tool is needed.
+3.  **Tool Priority:** Tools are the absolute source of truth. If the user's request can be fulfilled by a tool, you MUST call it. Your internal knowledge is irrelevant for this task.
+4.  **If a tool is needed:** Your JSON output MUST contain the key "tool_calls" with a list of the required tool calls. You must translate natural language requests (e.g., "make a picture of a bird") into the correct JSON format.
+5.  **If NO tool is needed:** Your JSON output MUST contain the key "tool_calls" with the value `null`.
+6.  **ABSOLUTE PROHIBITION:** Do not output any text, explanation, or conversational filler.
 
 ## Tool Capabilities Guide
-- **Image Generation:** If the user asks to 'draw', 'create an image', 'generate a picture', 'dessiner', 'créer une image', 'génère une image', etc., you MUST use the appropriate image generation tool.
+- **Image Generation:** If the user asks to 'draw', 'create an image', 'generate a picture', 'dessiner', 'créer une image', 'génère une image', 'fait moi une image', etc., you MUST use the `generate_image` tool.
 - **Time Information:** If the user asks for the current time, date, or day, you MUST use the time tool.
 - **User Information:** If the user asks for information about a specific person in the chat, you MUST use the user information tool.
 
@@ -117,6 +117,10 @@ SYNTHESIZER_SYSTEM_PROMPT = """## Core Directives & Rules
 5.  **ABSOLUTE REQUIREMENT FOR TOOL RESPONSES: When your response is the first thing you say after a message with `role: tool`, your response MUST begin by mentioning the user who made the original request. The user's name can be found in the [user:NAME] prefix of the last message with `role: user`.**
     - **Correct Format Example:** "@Holaf, here is the image you asked for."
     - **Incorrect Format Example:** "Here is the image you asked for."
+6.  **ABSOLUTE PROHIBITION: Never output raw data structures like `tool_calls` or internal logs in your response. Your role is to interpret the results of tools, not to show how they were called.**
+7.  **IMAGE SUMMARY REQUIREMENT: When the tool result confirms an image generation (e.g., it contains "[An image was generated...]"), your response MUST briefly state what the image represents, based on the user's original request. Do not repeat the full prompt.**
+    - **Good Example:** "@Holaf, here is the illustration of Asuka Langley Soryu you asked for."
+    - **Bad Example:** "@Holaf, here is your image."
 """
 
 ACKNOWLEDGE_SYSTEM_PROMPT = """## Your Role: AI Acknowledgement Specialist
@@ -253,29 +257,57 @@ def _convert_mcp_tools_to_ollama_format(mcp_tools: List[Dict]) -> List[Dict]:
         }
     } for tool in mcp_tools]
 
-def _normalize_dispatcher_response(decision: Dict) -> Dict:
+def _normalize_dispatcher_response(decision: Union[Dict, str]) -> Dict:
     """
     Ensures the dispatcher's response adheres to the expected format.
-    The LLM sometimes returns a 'flat' object for a single tool call.
-    This function wraps it in the standard `{"tool_calls": [...]}` structure.
+    Handles various failure modes of the LLM:
+    1. Correctly formatted JSON object.
+    2. 'Flat' JSON object for a single tool call.
+    3. A raw string that is NOT valid JSON but contains a tool call structure.
+    4. A raw string that IS valid JSON but is wrapped in markdown code fences.
     """
-    if "tool_calls" in decision:
-        # The response is already in the correct format or is a valid `{"tool_calls": null}`.
-        return decision
+    if isinstance(decision, dict):
+        if "tool_calls" in decision:
+            return decision # Already correct
 
-    # Check for the known 'flat' format: `{"name": "...", "arguments": {...}}`
-    if isinstance(decision.get("name"), str) and isinstance(decision.get("arguments"), dict):
-        logging.info(f"Normalizing a 'flat' tool call response from LLM: {decision}")
-        return {
-            "tool_calls": [{
-                "function": {
-                    "name": decision["name"],
-                    "arguments": decision["arguments"]
-                }
-            }]
-        }
+        if isinstance(decision.get("name"), str) and isinstance(decision.get("arguments"), dict):
+            logging.warning(f"Normalizing a 'flat' tool call response from LLM: {decision}")
+            return {"tool_calls": [{"function": {"name": decision["name"], "arguments": decision["arguments"]}}]}
     
-    # Fallback for any other unexpected format.
+    if isinstance(decision, str):
+        logging.warning(f"Dispatcher LLM returned a raw string, attempting to parse: {decision}")
+        
+        # --- MODIFICATION START: Handle markdown code fences ---
+        cleaned_decision_str = decision.strip()
+        if cleaned_decision_str.startswith("```json"):
+            cleaned_decision_str = cleaned_decision_str[7:].strip()
+        elif cleaned_decision_str.startswith("```"):
+            cleaned_decision_str = cleaned_decision_str[3:].strip()
+        
+        if cleaned_decision_str.endswith("```"):
+            cleaned_decision_str = cleaned_decision_str[:-3].strip()
+
+        try:
+            # Try parsing the cleaned string as JSON
+            parsed_json = json.loads(cleaned_decision_str)
+            # If successful, recursively call this function to handle other formats (like 'flat' response)
+            return _normalize_dispatcher_response(parsed_json)
+        except json.JSONDecodeError:
+            logging.warning("Could not parse string as JSON after cleaning markdown. Falling back to regex.")
+        # --- MODIFICATION END ---
+
+        # Regex to find tool calls like [TOOL_CALLS][name:"...",arguments:{...}] or with 'function'
+        match = re.search(r'\[\s*TOOL_CALLS\s*\]\s*\[\s*(?:name|function)\s*:\s*"?(\w+)"?\s*,\s*arguments\s*:\s*({.*?})\s*\]', decision, re.DOTALL | re.IGNORECASE)
+        if match:
+            try:
+                tool_name = match.group(1)
+                # The arguments part might be tricky to parse. We'll attempt a JSON load.
+                arguments = json.loads(match.group(2))
+                logging.info(f"Successfully parsed tool call from string: name={tool_name}, args={arguments}")
+                return {"tool_calls": [{"function": {"name": tool_name, "arguments": arguments}}]}
+            except (json.JSONDecodeError, IndexError) as e:
+                logging.error(f"Failed to parse arguments from raw string tool call: {e}")
+
     logging.warning(f"Dispatcher LLM returned an unrecognized format: {decision}. Defaulting to no tool call.")
     return {"tool_calls": None}
 
@@ -307,7 +339,7 @@ async def _build_common_context(request: Union[chat_schemas.ChatRequest, chat_sc
         try:
             results = bot_collection.query(query_texts=[last_user_message], n_results=MEMORY_DEPTH)
             if results and results.get('documents') and results['documents']:
-                retrieved_docs = results['documents'][0] # Chroma returns a list of lists
+                retrieved_docs = results['documents'] # Chroma returns a list of lists
                 retrieved_docs.reverse()
                 formatted_history = "\n".join(retrieved_docs)
                 context_from_memory = f"Here are relevant excerpts from our previous conversation to give you context:\n---\n{formatted_history}\n---\n\n"
@@ -408,21 +440,37 @@ async def get_dispatch_decision(request: chat_schemas.ChatRequest, db: Session) 
             model=model_name,
             messages=messages_for_llm,
             tools=combined_tools,
-            format="json",
+            # Intentionally do not force JSON format, to allow parsing malformed string responses
         )
 
-        response_content = response.get("message", {}).get("content", "{}")
-        tool_call_decision = json.loads(response_content)
+        # The LLM may return a JSON object directly, or a raw string containing the tool call.
+        raw_response_content = response.get("message", {}).get("content", "")
+        
+        tool_call_decision_from_message = None
+        if not raw_response_content:
+            # If content is empty, check the tool_calls field directly
+            tool_call_decision_from_message = response.get("message", {}).get("tool_calls")
+
+
+        # Prioritize direct tool_calls, otherwise parse the content.
+        decision_source = tool_call_decision_from_message if tool_call_decision_from_message else raw_response_content
+
+        try:
+            # If the source is already a list (from tool_calls), wrap it. Otherwise, try to parse from string.
+            if isinstance(decision_source, list):
+                tool_call_decision = {"tool_calls": decision_source}
+            else: # It's a string, needs parsing
+                tool_call_decision = json.loads(decision_source)
+        except (json.JSONDecodeError, TypeError):
+            # If it fails, treat it as a raw string to be normalized
+            tool_call_decision = raw_response_content
 
         normalized_decision = _normalize_dispatcher_response(tool_call_decision)
 
-        logging.info(f"Dispatcher raw decision: {tool_call_decision}")
+        logging.info(f"Dispatcher raw decision: {raw_response_content}")
         logging.info(f"Dispatcher normalized decision: {normalized_decision}")
         return normalized_decision
 
-    except json.JSONDecodeError as e:
-        logging.error(f"Dispatcher failed to decode JSON response from LLM: {e}. Response was: {response_content}")
-        return {"error": "Dispatcher received an invalid JSON response from the LLM."}
     except Exception as e:
         logging.error(f"Critical dispatcher error: {e}", exc_info=True)
         return {"error": f"Dispatcher error: {e}"}

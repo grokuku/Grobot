@@ -91,14 +91,18 @@
 
 ---
 
-#### ☆☆☆☆☆ Section 5: Image Generation Tools
+#### ★★★★★ Section 5: Image Generation Tools
 
 *   **Objectif :** Permettre au bot de générer des images sur demande.
-*   **Statut :** Non commencé.
+*   **Statut :** Terminé et stable.
 
 *   **Sous-tâches :**
-    *   [ ] Définir une API de connexion à un service de génération (ex: ComfyUI).
-    *   [ ] Implémenter l'outil `generate_image` pour le bot.
+    *   [x] Adoption du standard MCP pour l'intégration d'outils externes.
+    *   [x] Implémentation d'un proxy d'outils (`tools_api.py`) pour relayer les appels.
+    *   [x] Intégration de l'outil `generate_image` pour le bot via un serveur MCP externe.
+    *   [x] Mise en place d'une communication asynchrone par WebSocket pour gérer les tâches longues.
+    *   [x] Commande applicative `/image` avec autocomplétion pour les paramètres.
+    *   [x] Fiabilisation de la chaîne de communication de bout en bout (proxy, client, serveur MCP).
 
 ---
 

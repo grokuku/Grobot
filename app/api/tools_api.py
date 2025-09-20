@@ -1,6 +1,3 @@
-####
-# app/api/tools_api.py
-####
 import json
 import httpx
 import logging
@@ -80,7 +77,8 @@ class ToolServerError(Exception):
 
 def create_error_tool_result(message: str) -> Dict[str, Any]:
     """Creates a standardized tool result dictionary for errors."""
-    return {"content": [{"type": "text", "text": message}]}
+    # --- MODIFICATION: Make the internal error a valid JSON-RPC response for the client ---
+    return {"jsonrpc": "2.0", "error": {"code": -32603, "message": message}, "id": next(JSONRPC_ID_COUNTER)}
 
 
 @router.get("/definitions", response_model=List[Dict[str, Any]])
@@ -198,20 +196,10 @@ async def execute_tool_call(request: ToolCallRequest, db: Session = Depends(get_
         
         rpc_response = await mcp_request(server_url, "tools/call", params, timeout=300.0)
         
-        # CORRIGÉ : On ne traite une erreur que si la clé 'error' existe et n'est pas nulle.
-        if rpc_response.get("error"):
-            error_details = rpc_response["error"]
-            log.error(f"Error from tool server {server_url}: {error_details}")
-            
-            message = "Unknown error"
-            if isinstance(error_details, dict):
-                message = error_details.get('message', str(error_details))
-            else:
-                message = str(error_details)
-            
-            return create_error_tool_result(f"Tool execution failed with error: {message}")
-
-        return rpc_response.get("result", create_error_tool_result("Error: Malformed success response from tool server (missing 'result' key)."))
+        # --- MODIFICATION: Transparent Proxy ---
+        # The proxy's job is to forward the response, not to interpret it.
+        # The client (bot_process.py) is now responsible for handling stream/start, result, or error.
+        return rpc_response
 
     except ToolServerError as e:
         log.error(f"A tool server communication error occurred for tool '{request.tool_name}': {e}", exc_info=True)

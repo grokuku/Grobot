@@ -3,7 +3,7 @@
 fastapi
 
 # Serveur ASGI
-uvicorn[standard]
+uvicorn
 
 # Tâches asynchrones
 celery

@@ -356,7 +356,7 @@ async def _handle_mcp_stream(websocket_url: str) -> Dict:
     This handles the asynchronous part of a tool call.
     """
     try:
-        async with websockets.connect(websocket_url, timeout=300) as websocket:
+        async with websockets.connect(websocket_url) as websocket:
             while True:
                 message_str = await websocket.recv()
                 message_data = json.loads(message_str)
@@ -638,7 +638,7 @@ async def execute_tools_and_synthesize(client: discord.Client, message: discord.
                         elif block.get("type") == "text" and block.get("text"):
                             text_content = str(block["text"])
 
-                        # MODIFICATION (Action 1.4) START: Logic to handle image URLs and download them
+                        # Logic to handle image URLs and download them
                         url_to_download = None
                         if image_url:
                             url_to_download = image_url
@@ -654,12 +654,15 @@ async def execute_tools_and_synthesize(client: discord.Client, message: discord.
                             if error_msg:
                                 text_parts.append(error_msg)
                             
-                            # If the text content was just a URL, do not add it to the text parts.
-                            if text_content and url_to_download == text_content.strip():
-                                continue # Skip to the next block in content_list
-                        # MODIFICATION (Action 1.4) END
+                            # --- MODIFICATION START: Robust URL Cleaning ---
+                            # If an image was processed, clean any associated text content of URLs
+                            # to prevent them from appearing in the final response.
+                            if text_content:
+                                # This regex removes both standalone URLs and Markdown image links.
+                                text_content = re.sub(r'!?\[.*?\]\(https?://\S+\)|https?://\S+', '', text_content).strip()
+                            # --- MODIFICATION END ---
                                 
-                        if text_content:
+                        if text_content: # Check if any text remains after potential cleaning
                             parsed_error = _try_parse_error_from_tool_text(text_content)
                             if parsed_error:
                                 text_parts.append(parsed_error)
