@@ -3,7 +3,7 @@ import sys
 import requests
 import discord
 from discord import app_commands
-from discord.ui import Modal, TextInput, Select
+from discord.ui import Modal, TextInput, Select, View, Button
 import argparse
 import json
 import traceback
@@ -909,101 +909,142 @@ async def style_names_autocomplete(interaction: discord.Interaction, current: st
 async def render_type_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
     return await _get_choices_for_tool_param('generate_image', 'render_type', current)
 
-# --- START: ADVANCED MODAL WITH DYNAMIC CHOICES ---
-class UpscaleOptionsModal(Modal, title='Upscale Image Options'):
-    def __init__(self, target: discord.Message, image_url: str, upscale_type_choices: List[str]):
+# --- START: NEW UPSCALE UX FLOW (VIEW + MODAL) ---
+
+async def _trigger_upscale_task(
+    interaction: discord.Interaction,
+    target: discord.Message,
+    image_url: str,
+    upscale_type: Optional[str],
+    prompt: Optional[str],
+    denoise: Optional[str],
+    seed: Optional[str]
+):
+    """Helper function to build and dispatch the upscale tool call."""
+    try:
+        arguments = {"input_image_url": image_url}
+        if prompt: arguments["prompt"] = prompt
+        if upscale_type: arguments["upscale_type"] = upscale_type
+        
+        if denoise:
+            try: arguments["denoise"] = float(denoise)
+            except ValueError: await interaction.followup.send("Invalid input for 'Denoise'. It must be a number.", ephemeral=True); return
+        
+        if seed:
+            try: arguments["seed"] = int(seed)
+            except ValueError: await interaction.followup.send("Invalid input for 'Seed'. It must be a number.", ephemeral=True); return
+
+        user_request_sentence = f"The user {interaction.user.display_name} asked me to upscale an image with specific options."
+        local_history = [{"role": "user", "content": user_request_sentence}]
+
+        user_context = {"discord_id": str(interaction.user.id), "name": interaction.user.name, "display_name": interaction.user.display_name}
+        
+        # Send acknowledgement
+        ack_payload = {"bot_id": BOT_ID, "user_context": user_context, "tool_name": "upscale_image"}
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as http_client:
+                ack_res = await http_client.post(ACKNOWLEDGE_API_URL, json=ack_payload)
+                if ack_res.is_success:
+                    await interaction.followup.send(ack_res.json().get("acknowledgement_message", "Got it. Starting image enhancement..."), ephemeral=True)
+                else:
+                    await interaction.followup.send("Got it. Starting image enhancement...", ephemeral=True)
+        except Exception:
+            await interaction.followup.send("Got it. Starting image enhancement...", ephemeral=True)
+
+        tool_calls = [{"function": {"name": "upscale_image", "arguments": arguments}}]
+        
+        channel_context = {"context_type": "DIRECT_MESSAGE", "channel_id": str(interaction.channel_id)}
+        if interaction.guild:
+            channel_context.update({"context_type": "SERVER_CHANNEL", "server_id": str(interaction.guild.id), "server_name": interaction.guild.name, "channel_name": interaction.channel.name})
+
+        base_payload = {"bot_id": BOT_ID, "messages": local_history, "user_context": user_context, "channel_context": channel_context}
+
+        message_shim = SimpleNamespace(
+            id=target.id, channel=target.channel, author=interaction.user, guild=target.guild,
+            content=target.content, attachments=target.attachments, reply=target.channel.send, reference=target.to_reference()
+        )
+
+        asyncio.create_task(execute_tools_and_synthesize(client, message_shim, local_history, base_payload, tool_calls))
+
+    except Exception as e:
+        send_log("error", "trigger_upscale_error", {"error": str(e), "traceback": traceback.format_exc()})
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Sorry, a critical error occurred while triggering the upscale task.", ephemeral=True)
+        else:
+            await interaction.followup.send("Sorry, a critical error occurred while triggering the upscale task.", ephemeral=True)
+
+class UpscaleOptionsModal(Modal, title='Advanced Upscale Options'):
+    def __init__(self, target: discord.Message, image_url: str, selected_upscale_type: Optional[str]):
         super().__init__()
         self.target = target
         self.image_url = image_url
-        
-        # Dynamically create the Select menu with choices fetched from the API
-        if upscale_type_choices:
-            select_options = [discord.SelectOption(label=choice) for choice in upscale_type_choices[:25]] # Limit to 25 choices
-            self.type_select = Select(placeholder="Choose an upscale type (optional)", options=select_options, required=False)
-            self.add_item(self.type_select)
+        self.selected_upscale_type = selected_upscale_type
 
     prompt_input = TextInput(
-        label="Prompt (Optional)",
-        style=discord.TextStyle.paragraph,
+        label="Prompt (Optional)", style=discord.TextStyle.paragraph,
         placeholder="Describe any changes or improvements you'd like to see.",
-        required=False,
-        max_length=1000,
+        required=False, max_length=1000
     )
-
     denoise_input = TextInput(
-        label="Denoise Value (Optional)",
-        placeholder="A number between 0.0 and 1.0 (e.g., 0.5)",
-        required=False,
-        max_length=10,
+        label="Denoise Value (Optional)", placeholder="A number between 0.0 and 1.0 (e.g., 0.5)",
+        required=False, max_length=10
     )
-
     seed_input = TextInput(
-        label="Seed (Optional)",
-        placeholder="A number, or -1 for random.",
-        required=False,
-        max_length=20,
+        label="Seed (Optional)", placeholder="A number, or -1 for random.",
+        required=False, max_length=20
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        try:
-            await interaction.response.defer(thinking=False, ephemeral=True)
+        await interaction.response.defer(thinking=False, ephemeral=True)
+        await _trigger_upscale_task(
+            interaction=interaction, target=self.target, image_url=self.image_url,
+            upscale_type=self.selected_upscale_type, prompt=self.prompt_input.value,
+            denoise=self.denoise_input.value, seed=self.seed_input.value
+        )
 
-            arguments = {"input_image_url": self.image_url}
-            if self.prompt_input.value:
-                arguments["prompt"] = self.prompt_input.value
-            
-            # Get value from the select menu if it exists
-            if hasattr(self, 'type_select') and self.type_select.values:
-                arguments["upscale_type"] = self.type_select.values[0]
-            
-            if self.denoise_input.value:
-                try:
-                    arguments["denoise"] = float(self.denoise_input.value)
-                except ValueError:
-                    await interaction.followup.send("Invalid input for 'Denoise'. It must be a number.", ephemeral=True); return
-            
-            if self.seed_input.value:
-                try:
-                    arguments["seed"] = int(self.seed_input.value)
-                except ValueError:
-                    await interaction.followup.send("Invalid input for 'Seed'. It must be a number.", ephemeral=True); return
+class UpscaleControlView(View):
+    def __init__(self, interaction: discord.Interaction, target: discord.Message, image_url: str, upscale_type_choices: List[str]):
+        super().__init__(timeout=300) # 5 minute timeout
+        self.original_interaction = interaction
+        self.target = target
+        self.image_url = image_url
+        self.selected_upscale_type: Optional[str] = None
 
-            user_request_sentence = f"The user {interaction.user.display_name} asked me to upscale an image with specific options."
-            local_history = [{"role": "user", "content": user_request_sentence}]
+        if upscale_type_choices:
+            select_options = [discord.SelectOption(label=choice) for choice in upscale_type_choices[:25]]
+            self.type_select = Select(placeholder="Choose an upscale type...", options=select_options, min_values=1, max_values=1)
+            self.type_select.callback = self.select_callback
+            self.add_item(self.type_select)
 
-            user_context = {"discord_id": str(interaction.user.id), "name": interaction.user.name, "display_name": interaction.user.display_name}
-            ack_payload = {"bot_id": BOT_ID, "user_context": user_context, "tool_name": "upscale_image"}
-            try:
-                async with httpx.AsyncClient(timeout=20.0) as http_client:
-                    ack_res = await http_client.post(ACKNOWLEDGE_API_URL, json=ack_payload)
-                    if ack_res.is_success:
-                        await interaction.followup.send(ack_res.json().get("acknowledgement_message", "Got it. Starting image enhancement..."), ephemeral=True)
-                    else:
-                        await interaction.followup.send("Got it. Starting image enhancement...", ephemeral=True)
-            except Exception:
-                await interaction.followup.send("Got it. Starting image enhancement...", ephemeral=True)
+    async def select_callback(self, interaction: discord.Interaction):
+        self.selected_upscale_type = self.type_select.values[0]
+        await interaction.response.defer()
 
-            tool_calls = [{"function": {"name": "upscale_image", "arguments": arguments}}]
-            
-            channel_context = {"context_type": "DIRECT_MESSAGE", "channel_id": str(interaction.channel_id)}
-            if interaction.guild:
-                channel_context.update({"context_type": "SERVER_CHANNEL", "server_id": str(interaction.guild.id), "server_name": interaction.guild.name, "channel_name": interaction.channel.name})
+    @discord.ui.button(label="Start Upscale", style=discord.ButtonStyle.success)
+    async def start_button(self, interaction: discord.Interaction, button: Button):
+        if not self.selected_upscale_type:
+            await interaction.response.send_message("Please select an upscale type from the dropdown first.", ephemeral=True)
+            return
+        
+        await interaction.response.edit_message(content="Upscaling started...", view=None)
+        await _trigger_upscale_task(
+            interaction=interaction, target=self.target, image_url=self.image_url,
+            upscale_type=self.selected_upscale_type, prompt=None, denoise=None, seed=None
+        )
+        self.stop()
 
-            base_payload = {"bot_id": BOT_ID, "messages": local_history, "user_context": user_context, "channel_context": channel_context}
+    @discord.ui.button(label="Advanced Options...", style=discord.ButtonStyle.secondary)
+    async def advanced_button(self, interaction: discord.Interaction, button: Button):
+        modal = UpscaleOptionsModal(
+            target=self.target, image_url=self.image_url, 
+            selected_upscale_type=self.selected_upscale_type
+        )
+        await interaction.response.send_modal(modal)
+        self.stop() # Stop the view once the modal is launched
+        await self.original_interaction.edit_original_response(content="Advanced options opened.", view=None)
 
-            message_shim = SimpleNamespace(
-                id=self.target.id, channel=self.target.channel, author=interaction.user, guild=self.target.guild,
-                content=self.target.content, attachments=self.target.attachments, reply=self.target.channel.send, reference=self.target.to_reference()
-            )
-
-            asyncio.create_task(execute_tools_and_synthesize(client, message_shim, local_history, base_payload, tool_calls))
-
-        except Exception as e:
-            send_log("error", "modal_submit_error", {"modal": "UpscaleOptionsModal", "error": str(e), "traceback": traceback.format_exc()})
-            if not interaction.response.is_done():
-                await interaction.response.send_message("Sorry, a critical error occurred while submitting the options.", ephemeral=True)
-            else:
-                await interaction.followup.send("Sorry, a critical error occurred while submitting the options.", ephemeral=True)
+    async def on_timeout(self):
+        await self.original_interaction.edit_original_response(content="Upscale options timed out.", view=None)
 
 # --- START: ROBUST IMAGE DETECTION HELPER ---
 def _find_image_url_in_message(message: discord.Message) -> Optional[str]:
@@ -1126,8 +1167,13 @@ async def upscale_context_menu(interaction: discord.Interaction, target: discord
             schema = upscale_tool_def.get("inputSchema", {}).get("properties", {}).get("upscale_type", {})
             upscale_type_choices = schema.get("enum", [])
 
-        modal = UpscaleOptionsModal(target=target, image_url=target_image_url, upscale_type_choices=upscale_type_choices)
-        await interaction.response.send_modal(modal)
+        view = UpscaleControlView(
+            interaction=interaction,
+            target=target,
+            image_url=target_image_url,
+            upscale_type_choices=upscale_type_choices
+        )
+        await interaction.response.send_message("Please select an upscale type:", view=view, ephemeral=True)
     except Exception as e:
         send_log("error", "context_menu_error", {"command": "Upscale Image", "error": str(e), "traceback": traceback.format_exc()})
         await interaction.response.send_message("Sorry, an error occurred while preparing the upscale options.", ephemeral=True)

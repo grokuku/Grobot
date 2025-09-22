@@ -432,31 +432,7 @@ else:
 
 ## 9. SESSIONS DE DÉVELOPPEMENT (Historique)
 
-*Les sessions antérieures à la 113 sont omises pour la brièveté.*
-
-### 113. Correction de l'Expérience Utilisateur et de Régression Critique du Backend (Session du 2025-09-20)
-*   **Résumé :** La session a débuté par la correction d'un bug prioritaire de l'interface utilisateur. La modale de configuration des outils ne permettait pas le défilement et, plus important, son bouton "Sauvegarder" ne déclenchait pas de sauvegarde réelle, créant un flux de travail contre-intuitif. Après une série de corrections qui a mené à une régression critique du backend (une `SyntaxError` dans `bots_api.py` due à une commande `sed` défectueuse), le problème a été résolu de manière méthodique.
-    1.  **Correction de l'Interface :** Le CSS a été corrigé pour permettre le défilement. La logique dans `ui.js` a été revue pour que le bouton de sauvegarde de la modale déclenche un appel API direct et immédiat, rendant le comportement prévisible et intuitif pour l'utilisateur.
-    2.  **Correction de la Régression :** Le fichier `bots_api.py`, qui avait été corrompu et empêchait le serveur de démarrer, a été restauré avec une version complète et correcte, remettant l'application en ligne.
-*   **Résultat :** **SUCCÈS.** L'application est de nouveau stable. Le bug de l'interface de configuration des outils est entièrement résolu, améliorant significativement l'expérience utilisateur pour l'administration des bots.
-
-### 114. Débogage et Amélioration de l'Interface de Configuration des Outils (Session du 2025-09-22)
-*   **Résumé :** Cette session a été consacrée à la résolution d'un bug de l'interface utilisateur révélé par l'ajout de plusieurs outils sur un même serveur MCP.
-    1.  **Diagnostic de la Découverte d'Outils :** Il a été confirmé que le backend de `GroBot` ne découvrait pas tous les outils de `MCP_GenImage`. Un test `curl` a permis de diagnostiquer que le problème venait d'une mauvaise configuration dans la base de données de `MCP_GenImage` (les "Render Types" pour l'upscale n'étaient pas marqués comme visibles), qui a été corrigée.
-    2.  **Diagnostic du Bug d'Affichage :** Une fois tous les outils découverts, la modale de configuration des outils dans `GroBot` est devenue inutilisable car le contenu débordait sans barre de défilement.
-    3.  **Amélioration de l'Expérience Utilisateur :** Sur demande, l'objectif a été élargi pour non seulement corriger le défilement mais aussi pour ajouter une distinction visuelle claire (sous forme de "cartes") entre chaque outil dans la liste.
-    4.  **Correction Itérative (CSS/JS) :** Un processus de débogage méthodique a été nécessaire. Après avoir vérifié que le cache n'était pas en cause, l'inspection du DOM a révélé que la structure HTML était correcte mais que la mise en page CSS ne s'appliquait pas comme prévu. Le problème a été isolé à un comportement de `flexbox` sur la balise `<form>`, qui empêchait le conteneur interne de grandir et d'activer son propre défilement.
-*   **Résultat :** **SUCCÈS.** Les fichiers `style.css` et `ui.js` ont été corrigés. La modale de configuration des outils est désormais robuste, capable d'afficher un grand nombre d'outils de manière claire, distincte et avec un défilement fonctionnel.
-
-### 115. Intégration de l'Outil d'Upscale via Détection Contextuelle et Commande Slash (Session du 2025-09-22)
-*   **Résumé :** L'objectif de la session était d'intégrer pleinement l'outil `upscale_image`. Le travail a suivi un flux logique complet, du client au backend, et a inclus la résolution d'une régression et d'un problème de déploiement.
-    1.  **Logique Client (`bot_process.py`) :** Le client a été modifié pour détecter une image pertinente dans le contexte d'un message (pièces jointes du message ou du message de référence) et transmettre son URL au backend.
-    2.  **Correction de Régression :** Une première version de cette modification a introduit une régression (`NameError`), qui a été rapidement identifiée et corrigée.
-    3.  **Schéma Backend (`chat_schemas.py`) :** Le schéma de la requête a été étendu pour accepter la nouvelle URL d'image contextuelle.
-    4.  **Logique Backend (`agent_logic.py`) :** Le prompt du Répartiteur a été enrichi pour qu'il soit informé de la présence d'une image et qu'il sache comment utiliser l'outil `upscale_image` en conséquence.
-    5.  **Intégration Discord (`bot_process.py`) :** Une nouvelle commande `/upscale` a été créée, permettant un appel direct de l'outil avec gestion automatique de l'image la plus récente dans le salon si aucune URL n'est fournie.
-    6.  **Diagnostic de Déploiement :** La nouvelle commande n'apparaissant pas dans Discord, le problème a été diagnostiqué comme un potentiel cache de build Docker. Une reconstruction forcée de l'image et du conteneur du service `discord-bot-launcher` a résolu le problème et a fait apparaître la commande.
-*   **Résultat :** **SUCCÈS.** L'outil `upscale_image` est désormais pleinement intégré et accessible aux utilisateurs de manière intuitive, soit en répondant à une image, soit en utilisant la commande dédiée `/upscale`.
+*Les sessions antérieures à la 116 sont omises pour la brièveté.*
 
 ### 116. Fiabilisation et Amélioration Ergonomique de l'Outil d'Upscale (Session du 2025-09-22)
 *   **Résumé :** La session a été consacrée à une refonte en profondeur de la fonctionnalité d'upscale pour corriger des bugs de fiabilité et des problèmes majeurs d'expérience utilisateur.
@@ -474,13 +450,19 @@ else:
     2.  **Diagnostic du Menu Manquant :** Il a été confirmé que l'absence du menu déroulant pour le type d'upscale n'était pas un bug dans `GroBot`, mais était dû à une absence de la liste `enum` dans le schéma JSON de l'outil côté `MCP_GenImage`.
 *   **Résultat :** **SUCCÈS.** La fonctionnalité d'upscale, via le menu contextuel et la modale avancée, est désormais entièrement fiable et opérationnelle. Le dernier bug critique est résolu.
 
+### 118. Amélioration de l'UX de l'Upscale avec une Interface à Deux Étapes (View + Modal) (Session du 2025-09-22)
+*   **Résumé :** Après avoir rendu l'outil d'upscale fonctionnel, l'expérience utilisateur de la modale (avec un simple champ de texte pour le type d'upscale) a été jugée insatisfaisante. Une recherche sur les capacités de l'API Discord a confirmé qu'il est impossible d'inclure des menus déroulants dans les modales. La solution a été de refondre entièrement l'interaction.
+    1.  **Diagnostic des Limitations :** Une série de tests et d'erreurs a permis de confirmer que la limitation de l'API Discord était la cause racine du problème d'interface.
+    2.  **Conception d'un Nouveau Flux :** Une architecture d'interface à deux étapes a été conçue : le clic droit affiche d'abord une **Vue** (`discord.ui.View`) avec un vrai menu déroulant. Cette vue contient un bouton "Options Avancées" qui, lui, ouvre une **Modale** pour les paramètres textuels.
+    3.  **Implémentation :** Le fichier `bot_process.py` a été significativement remanié pour implémenter ce nouveau flux, en créant les classes `UpscaleControlView` et `UpscaleOptionsModal` et en orchestrant leur interaction.
+*   **Résultat :** **SUCCÈS.** L'outil d'upscale est maintenant accessible via une interface intuitive, puissante et conforme aux meilleures pratiques de Discord. L'utilisateur peut choisir un type d'upscale dans un menu clair et, s'il le souhaite, ajouter des options avancées dans un second temps.
+
 ---
 
 ## 10. État Actuel et Plan d'Action
 
 ### État Actuel (Bugs Connus et Statut)
-*   **CORRIGÉ (Bug Critique de l'Outil d'Upscale) :** L'incohérence de nom de paramètre (`image_url` vs `input_image_url`) a été corrigée. La fonctionnalité d'upscale via la modale est désormais pleinement opérationnelle. (Session 117)
-*   **IMPLÉMENTÉ (Intégration Ergonomique de l'Upscale) :** L'outil `upscale_image` est accessible de manière fiable et intuitive via un menu contextuel ouvrant une modale avec des options avancées (y compris un menu déroulant dynamique). (Session 116)
+*   **IMPLÉMENTÉ (UX Avancée pour l'Upscale) :** L'outil d'upscale est accessible via une interface à deux étapes (Vue + Modale) qui offre une expérience utilisateur optimale : menu déroulant pour le type, et modale optionnelle pour les paramètres avancés. (Session 118)
 *   **CORRIGÉ (Interface de Configuration des Outils) :** La modale de configuration des outils est désormais fonctionnelle, avec un défilement correct, une distinction visuelle claire entre les outils, et prête pour l'ajout de nouveaux outils. (Session 114)
 *   **CORRIGÉ (Stabilité du Synthétiseur) :** Le Synthétiseur est maintenant fiable sous charge et ne "fuit" plus sa logique interne dans le chat. (Session 112)
 *   **CORRIGÉ (URL d'Image Redondante) :** La réponse finale à une génération d'image ne contient plus de lien URL redondant. (Session 112)
