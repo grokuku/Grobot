@@ -3,6 +3,7 @@ import sys
 import requests
 import discord
 from discord import app_commands
+from discord.ui import Modal, TextInput, Select
 import argparse
 import json
 import traceback
@@ -482,9 +483,6 @@ class MessageStreamManager:
 
         if not content_to_send: return
 
-        # MODIFICATION (Action 1.5): The hardcoded prefix has been removed.
-        # The logic to mention the user is now handled by the Synthesizer's prompt.
-
         try:
             if self.current_message:
                 if self.current_message.content != content_to_send:
@@ -676,7 +674,6 @@ async def execute_tools_and_synthesize(client: discord.Client, message: discord.
                                             limit = reported_limit
                                             img.save(compressed_buffer, format='JPEG', quality=95, optimize=True)
                                             
-                                            # --- CORRECTION: Capture size BEFORE rewinding the buffer ---
                                             new_size = compressed_buffer.tell()
                                             
                                             if new_size < limit:
@@ -702,10 +699,8 @@ async def execute_tools_and_synthesize(client: discord.Client, message: discord.
                             if error_msg:
                                 text_parts.append(error_msg)
                             
-                            # --- MODIFICATION START: Robust URL Cleaning ---
                             if text_content:
                                 text_content = re.sub(r'!?\[.*?\]\(https?://\S+\)|https?://\S+', '', text_content).strip()
-                            # --- MODIFICATION END ---
                                 
                         if text_content: # Check if any text remains after potential cleaning
                             parsed_error = _try_parse_error_from_tool_text(text_content)
@@ -759,8 +754,8 @@ async def execute_tools_and_synthesize(client: discord.Client, message: discord.
             cleaned_final_response = re.sub(r'<think>.*?</think>', '', final_response, flags=re.DOTALL).strip()
             if cleaned_final_response:
                 local_history.append({"role": "assistant", "content": cleaned_final_response})
-        
-        chat_histories[message.channel.id] = local_history
+            
+            chat_histories[message.channel.id] = local_history
 
     finally:
         if synthesizer_payload and cleaned_final_response:
@@ -907,14 +902,132 @@ intents.members = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-# --- Autocomplete Handlers for /image command ---
+# --- Autocomplete Handlers ---
 async def style_names_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
     return await _get_choices_for_tool_param('generate_image', 'style_names', current)
 
 async def render_type_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
     return await _get_choices_for_tool_param('generate_image', 'render_type', current)
 
-# --- Application Slash Commands ---
+# --- START: ADVANCED MODAL WITH DYNAMIC CHOICES ---
+class UpscaleOptionsModal(Modal, title='Upscale Image Options'):
+    def __init__(self, target: discord.Message, image_url: str, upscale_type_choices: List[str]):
+        super().__init__()
+        self.target = target
+        self.image_url = image_url
+        
+        # Dynamically create the Select menu with choices fetched from the API
+        if upscale_type_choices:
+            select_options = [discord.SelectOption(label=choice) for choice in upscale_type_choices[:25]] # Limit to 25 choices
+            self.type_select = Select(placeholder="Choose an upscale type (optional)", options=select_options, required=False)
+            self.add_item(self.type_select)
+
+    prompt_input = TextInput(
+        label="Prompt (Optional)",
+        style=discord.TextStyle.paragraph,
+        placeholder="Describe any changes or improvements you'd like to see.",
+        required=False,
+        max_length=1000,
+    )
+
+    denoise_input = TextInput(
+        label="Denoise Value (Optional)",
+        placeholder="A number between 0.0 and 1.0 (e.g., 0.5)",
+        required=False,
+        max_length=10,
+    )
+
+    seed_input = TextInput(
+        label="Seed (Optional)",
+        placeholder="A number, or -1 for random.",
+        required=False,
+        max_length=20,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(thinking=False, ephemeral=True)
+
+            arguments = {"input_image_url": self.image_url}
+            if self.prompt_input.value:
+                arguments["prompt"] = self.prompt_input.value
+            
+            # Get value from the select menu if it exists
+            if hasattr(self, 'type_select') and self.type_select.values:
+                arguments["upscale_type"] = self.type_select.values[0]
+            
+            if self.denoise_input.value:
+                try:
+                    arguments["denoise"] = float(self.denoise_input.value)
+                except ValueError:
+                    await interaction.followup.send("Invalid input for 'Denoise'. It must be a number.", ephemeral=True); return
+            
+            if self.seed_input.value:
+                try:
+                    arguments["seed"] = int(self.seed_input.value)
+                except ValueError:
+                    await interaction.followup.send("Invalid input for 'Seed'. It must be a number.", ephemeral=True); return
+
+            user_request_sentence = f"The user {interaction.user.display_name} asked me to upscale an image with specific options."
+            local_history = [{"role": "user", "content": user_request_sentence}]
+
+            user_context = {"discord_id": str(interaction.user.id), "name": interaction.user.name, "display_name": interaction.user.display_name}
+            ack_payload = {"bot_id": BOT_ID, "user_context": user_context, "tool_name": "upscale_image"}
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as http_client:
+                    ack_res = await http_client.post(ACKNOWLEDGE_API_URL, json=ack_payload)
+                    if ack_res.is_success:
+                        await interaction.followup.send(ack_res.json().get("acknowledgement_message", "Got it. Starting image enhancement..."), ephemeral=True)
+                    else:
+                        await interaction.followup.send("Got it. Starting image enhancement...", ephemeral=True)
+            except Exception:
+                await interaction.followup.send("Got it. Starting image enhancement...", ephemeral=True)
+
+            tool_calls = [{"function": {"name": "upscale_image", "arguments": arguments}}]
+            
+            channel_context = {"context_type": "DIRECT_MESSAGE", "channel_id": str(interaction.channel_id)}
+            if interaction.guild:
+                channel_context.update({"context_type": "SERVER_CHANNEL", "server_id": str(interaction.guild.id), "server_name": interaction.guild.name, "channel_name": interaction.channel.name})
+
+            base_payload = {"bot_id": BOT_ID, "messages": local_history, "user_context": user_context, "channel_context": channel_context}
+
+            message_shim = SimpleNamespace(
+                id=self.target.id, channel=self.target.channel, author=interaction.user, guild=self.target.guild,
+                content=self.target.content, attachments=self.target.attachments, reply=self.target.channel.send, reference=self.target.to_reference()
+            )
+
+            asyncio.create_task(execute_tools_and_synthesize(client, message_shim, local_history, base_payload, tool_calls))
+
+        except Exception as e:
+            send_log("error", "modal_submit_error", {"modal": "UpscaleOptionsModal", "error": str(e), "traceback": traceback.format_exc()})
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Sorry, a critical error occurred while submitting the options.", ephemeral=True)
+            else:
+                await interaction.followup.send("Sorry, a critical error occurred while submitting the options.", ephemeral=True)
+
+# --- START: ROBUST IMAGE DETECTION HELPER ---
+def _find_image_url_in_message(message: discord.Message) -> Optional[str]:
+    """Robustly finds an image URL in a message by checking attachments, then embeds, then raw URLs in content."""
+    # 1. Check attachments first
+    for attachment in message.attachments:
+        if attachment.content_type and attachment.content_type.startswith("image/"):
+            return attachment.url
+    
+    # 2. Check embeds
+    for embed in message.embeds:
+        if embed.image and embed.image.url:
+            return embed.image.url
+        if embed.thumbnail and embed.thumbnail.url:
+            return embed.thumbnail.url
+    
+    # 3. Fallback to regex on message content
+    url_match = re.search(r'https?://\S+\.(?:png|jpg|jpeg|webp|gif)', message.content, re.IGNORECASE)
+    if url_match:
+        return url_match.group(0)
+        
+    return None
+
+# --- Application Commands ---
 @tree.command(name="image", description="Generates an image using an AI model.")
 @app_commands.describe(
     prompt="A detailed textual description of the desired image.",
@@ -945,7 +1058,6 @@ async def image(
     try:
         await interaction.response.defer(thinking=False, ephemeral=True)
 
-        # Step 1: Build arguments for the tool call
         arguments = {"prompt": prompt}
         if negative_prompt: arguments["negative_prompt"] = negative_prompt
         if style_names: arguments["style_names"] = [s.strip() for s in style_names.split(',') if s.strip()]
@@ -953,11 +1065,9 @@ async def image(
         if render_type: arguments["render_type"] = render_type
         if enhance_prompt is False: arguments["enhance_prompt"] = False
         
-        # MODIFICATION (Action 1.3): Create a natural language request for the history
         user_request_sentence = f"The user {interaction.user.display_name} asked me to generate an image with the following description: \"{prompt}\"."
         local_history = [{"role": "user", "content": user_request_sentence}]
 
-        # Step 2: Send an acknowledgement message generated by the LLM
         user_context = {"discord_id": str(interaction.user.id), "name": interaction.user.name, "display_name": interaction.user.display_name}
         ack_payload = {"bot_id": BOT_ID, "user_context": user_context, "tool_name": "generate_image"}
         try:
@@ -970,8 +1080,6 @@ async def image(
         except Exception:
             await interaction.followup.send("Got it. Starting image generation...", ephemeral=True)
 
-
-        # Step 3: Prepare the payload for the main execution engine
         tool_calls = [{"function": {"name": "generate_image", "arguments": arguments}}]
         
         channel_context = {"context_type": "DIRECT_MESSAGE", "channel_id": str(interaction.channel_id)}
@@ -980,19 +1088,17 @@ async def image(
 
         base_payload = {"bot_id": BOT_ID, "messages": local_history, "user_context": user_context, "channel_context": channel_context}
 
-        # Create a shim object that mimics discord.Message for compatibility
         message_shim = SimpleNamespace(
             id=interaction.id,
             channel=interaction.channel,
             author=interaction.user,
             guild=interaction.guild,
-            content=user_request_sentence, # Use the natural sentence here too
+            content=user_request_sentence,
             attachments=[],
             reply=interaction.channel.send,
-            reference=None # Slash commands don't have references
+            reference=None
         )
 
-        # Step 4: Delegate the entire execution to the robust, existing pipeline
         await execute_tools_and_synthesize(client, message_shim, local_history, base_payload, tool_calls)
 
     except Exception as e:
@@ -1002,74 +1108,29 @@ async def image(
         else:
             await interaction.followup.send("Sorry, a critical error occurred.", ephemeral=True)
 
-@tree.command(name="upscale", description="Enhances or upscales an image using an AI model.")
-@app_commands.describe(
-    prompt="Optional. A textual description of how to improve the image.",
-    image_url="Optional. The direct URL of the image to upscale. If not provided, I will use the last image in the channel."
-)
-async def upscale(
-    interaction: discord.Interaction,
-    prompt: Optional[str] = None,
-    image_url: Optional[str] = None
-):
+@tree.context_menu(name="Upscale Image")
+async def upscale_context_menu(interaction: discord.Interaction, target: discord.Message):
+    target_image_url = _find_image_url_in_message(target)
+
+    if not target_image_url:
+        await interaction.response.send_message("I couldn't find a valid image in the selected message to upscale.", ephemeral=True)
+        return
+    
     try:
-        await interaction.response.defer(thinking=False, ephemeral=True)
-
-        # Step 1: Find the target image URL
-        target_image_url = image_url
-        if not target_image_url:
-            target_image_url = await _find_last_image_url_in_channel(interaction.channel)
-
-        if not target_image_url:
-            await interaction.followup.send("I couldn't find an image to upscale. Please provide a URL or use this command in a channel with a recent image.", ephemeral=True)
-            return
-
-        # Step 2: Build arguments and context for the tool call
-        arguments = {"image_url": target_image_url}
-        if prompt:
-            arguments["prompt"] = prompt
-            user_request_sentence = f"The user {interaction.user.display_name} asked me to upscale an image with the instruction: \"{prompt}\"."
-        else:
-            user_request_sentence = f"The user {interaction.user.display_name} asked me to upscale an image."
+        # Fetch the tool definitions to get choices for the select menu
+        definitions = await _get_external_tool_definitions()
+        upscale_tool_def = next((t for t in definitions if t.get("name") == "upscale_image"), None)
         
-        local_history = [{"role": "user", "content": user_request_sentence}]
+        upscale_type_choices = []
+        if upscale_tool_def:
+            schema = upscale_tool_def.get("inputSchema", {}).get("properties", {}).get("upscale_type", {})
+            upscale_type_choices = schema.get("enum", [])
 
-        # Step 3: Send an acknowledgement message
-        user_context = {"discord_id": str(interaction.user.id), "name": interaction.user.name, "display_name": interaction.user.display_name}
-        ack_payload = {"bot_id": BOT_ID, "user_context": user_context, "tool_name": "upscale_image"}
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as http_client:
-                ack_res = await http_client.post(ACKNOWLEDGE_API_URL, json=ack_payload)
-                if ack_res.is_success:
-                    await interaction.followup.send(ack_res.json().get("acknowledgement_message", "Got it. Starting image enhancement..."), ephemeral=True)
-                else:
-                    await interaction.followup.send("Got it. Starting image enhancement...", ephemeral=True)
-        except Exception:
-            await interaction.followup.send("Got it. Starting image enhancement...", ephemeral=True)
-
-        # Step 4: Prepare the payload for the main execution engine
-        tool_calls = [{"function": {"name": "upscale_image", "arguments": arguments}}]
-        
-        channel_context = {"context_type": "DIRECT_MESSAGE", "channel_id": str(interaction.channel_id)}
-        if interaction.guild:
-            channel_context.update({"context_type": "SERVER_CHANNEL", "server_id": str(interaction.guild.id), "server_name": interaction.guild.name, "channel_name": interaction.channel.name})
-
-        base_payload = {"bot_id": BOT_ID, "messages": local_history, "user_context": user_context, "channel_context": channel_context}
-
-        message_shim = SimpleNamespace(
-            id=interaction.id, channel=interaction.channel, author=interaction.user, guild=interaction.guild,
-            content=user_request_sentence, attachments=[], reply=interaction.channel.send, reference=None
-        )
-
-        # Step 5: Delegate execution to the main pipeline
-        await execute_tools_and_synthesize(client, message_shim, local_history, base_payload, tool_calls)
-
+        modal = UpscaleOptionsModal(target=target, image_url=target_image_url, upscale_type_choices=upscale_type_choices)
+        await interaction.response.send_modal(modal)
     except Exception as e:
-        send_log("error", "slash_command_error", {"command": "upscale", "error": str(e), "traceback": traceback.format_exc()})
-        if not interaction.response.is_done():
-            await interaction.response.send_message("Sorry, a critical error occurred.", ephemeral=True)
-        else:
-            await interaction.followup.send("Sorry, a critical error occurred.", ephemeral=True)
+        send_log("error", "context_menu_error", {"command": "Upscale Image", "error": str(e), "traceback": traceback.format_exc()})
+        await interaction.response.send_message("Sorry, an error occurred while preparing the upscale options.", ephemeral=True)
 
 def create_discord_client():
     

@@ -1,4 +1,3 @@
-#### Fichier : project_context.md
 # CONTEXTE MAÎTRE DU PROJET "GroBot"
 #### Date de dernière mise à jour : 2025-09-22
 #### Ce fichier sert de référence unique et doit être fourni en intégralité au début de chaque session.
@@ -459,12 +458,29 @@ else:
     6.  **Diagnostic de Déploiement :** La nouvelle commande n'apparaissant pas dans Discord, le problème a été diagnostiqué comme un potentiel cache de build Docker. Une reconstruction forcée de l'image et du conteneur du service `discord-bot-launcher` a résolu le problème et a fait apparaître la commande.
 *   **Résultat :** **SUCCÈS.** L'outil `upscale_image` est désormais pleinement intégré et accessible aux utilisateurs de manière intuitive, soit en répondant à une image, soit en utilisant la commande dédiée `/upscale`.
 
+### 116. Fiabilisation et Amélioration Ergonomique de l'Outil d'Upscale (Session du 2025-09-22)
+*   **Résumé :** La session a été consacrée à une refonte en profondeur de la fonctionnalité d'upscale pour corriger des bugs de fiabilité et des problèmes majeurs d'expérience utilisateur.
+    1.  **Correction de la Condition de Concurrence :** Une première tentative de fiabilisation via un prompt LLM trop strict dans `agent_logic.py` a causé une régression, empêchant le bot de détecter l'outil. Le problème a été résolu de manière robuste en revenant à un prompt simple et en ajoutant une logique de code Python déterministe qui injecte de force l'URL de l'image dans les arguments de l'outil, éliminant ainsi toute ambiguïté.
+    2.  **Amélioration Radicale de l'UX :** La commande textuelle `/upscale` a été supprimée au profit d'une commande de menu contextuel (clic droit). Face aux limitations de celle-ci, la fonctionnalité a été améliorée pour ouvrir une **modale (formulaire)**, permettant à l'utilisateur de spécifier toutes les options avancées (`prompt`, `denoise`, `seed`).
+    3.  **Correction Itérative :** Le développement de cette modale a révélé et permis de corriger plusieurs bugs :
+        *   La détection d'image est désormais robuste, cherchant dans les pièces jointes, puis les intégrations (`embeds`), et enfin via une expression régulière dans le contenu du message.
+        *   Pour pallier l'absence d'autocomplétion dans les modales, un **menu déroulant dynamique** a été implémenté pour le paramètre `upscale_type`, qui se peuple en interrogeant l'API des outils.
+        *   Un bug qui provoquait un échec après la soumission de la modale a été identifié et corrigé.
+*   **Résultat :** **SUCCÈS (Partiel).** L'interface de l'outil d'upscale est désormais fiable, complète et intuitive. Cependant, l'analyse des logs de fin de session a révélé un **nouveau bug critique** : une incohérence de nom de paramètre. `GroBot` envoie `image_url` tandis que le service `MCP_GenImage` attend `input_image_url`, ce qui cause l'échec de l'appel final à l'outil. La correction de ce nommage sera la priorité de la prochaine session.
+
+### 117. Correction du Bug Critique de Nommage et Finalisation de l'Outil d'Upscale (Session du 2025-09-22)
+*   **Résumé :** Cette session a eu pour unique objectif de corriger le bug critique identifié à la fin de la session 116, qui empêchait l'outil d'upscale de fonctionner.
+    1.  **Correction du Nommage :** Le bug provenait d'une incohérence de nom de paramètre dans `bot_process.py`. La logique de la modale d'upscale envoyait `image_url`, alors que le serveur d'outils `MCP_GenImage` attendait `input_image_url`. Une simple commande `sed` a permis de corriger ce nommage et de rendre la fonctionnalité opérationnelle.
+    2.  **Diagnostic du Menu Manquant :** Il a été confirmé que l'absence du menu déroulant pour le type d'upscale n'était pas un bug dans `GroBot`, mais était dû à une absence de la liste `enum` dans le schéma JSON de l'outil côté `MCP_GenImage`.
+*   **Résultat :** **SUCCÈS.** La fonctionnalité d'upscale, via le menu contextuel et la modale avancée, est désormais entièrement fiable et opérationnelle. Le dernier bug critique est résolu.
+
 ---
 
 ## 10. État Actuel et Plan d'Action
 
 ### État Actuel (Bugs Connus et Statut)
-*   **IMPLÉMENTÉ (Intégration de l'Outil d'Upscale) :** L'outil `upscale_image` est désormais pleinement fonctionnel. Il peut être déclenché contextuellement (en répondant à un message contenant une image) ou directement via la nouvelle commande `/upscale`. (Session 115)
+*   **CORRIGÉ (Bug Critique de l'Outil d'Upscale) :** L'incohérence de nom de paramètre (`image_url` vs `input_image_url`) a été corrigée. La fonctionnalité d'upscale via la modale est désormais pleinement opérationnelle. (Session 117)
+*   **IMPLÉMENTÉ (Intégration Ergonomique de l'Upscale) :** L'outil `upscale_image` est accessible de manière fiable et intuitive via un menu contextuel ouvrant une modale avec des options avancées (y compris un menu déroulant dynamique). (Session 116)
 *   **CORRIGÉ (Interface de Configuration des Outils) :** La modale de configuration des outils est désormais fonctionnelle, avec un défilement correct, une distinction visuelle claire entre les outils, et prête pour l'ajout de nouveaux outils. (Session 114)
 *   **CORRIGÉ (Stabilité du Synthétiseur) :** Le Synthétiseur est maintenant fiable sous charge et ne "fuit" plus sa logique interne dans le chat. (Session 112)
 *   **CORRIGÉ (URL d'Image Redondante) :** La réponse finale à une génération d'image ne contient plus de lien URL redondant. (Session 112)
@@ -476,4 +492,4 @@ else:
 
 ### Nouveau Plan d'Action (Priorités)
 
-*Le plan d'action sera redéfini au début de la prochaine session en fonction des priorités.*
+1.  **Personnaliser le message d'attente (`Acknowledge-Synthesizer`) :** Modifier la logique pour que ce message soit généré en tenant compte de la personnalité et de la langue du bot, afin d'offrir une expérience utilisateur cohérente.

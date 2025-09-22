@@ -424,7 +424,6 @@ async def get_dispatch_decision(request: chat_schemas.ChatRequest, db: Session) 
 
         location_context, files_context, memory_context = await _build_common_context(request, db, bot)
         
-        # --- MODIFICATION START: Inject Contextual Image URL ---
         image_context_info = ""
         if request.contextual_image_url:
             image_context_info = (
@@ -434,7 +433,6 @@ async def get_dispatch_decision(request: chat_schemas.ChatRequest, db: Session) 
                 "you MUST use an appropriate tool like `upscale_image` and pass this URL to it.\n\n"
             )
             logging.info(f"Injecting contextual image URL into dispatcher prompt: {request.contextual_image_url}")
-        # --- MODIFICATION END ---
 
         bot_personality_prompt = request.system or bot.system_prompt or ""
         final_system_prompt = (f"{DISPATCHER_SYSTEM_PROMPT}\n\n{location_context}{files_context}{image_context_info}{memory_context}{bot_personality_prompt}")
@@ -454,35 +452,41 @@ async def get_dispatch_decision(request: chat_schemas.ChatRequest, db: Session) 
             model=model_name,
             messages=messages_for_llm,
             tools=combined_tools,
-            # Intentionally do not force JSON format, to allow parsing malformed string responses
         )
 
-        # The LLM may return a JSON object directly, or a raw string containing the tool call.
         raw_response_content = response.get("message", {}).get("content", "")
         
         tool_call_decision_from_message = None
         if not raw_response_content:
-            # If content is empty, check the tool_calls field directly
             tool_call_decision_from_message = response.get("message", {}).get("tool_calls")
 
-
-        # Prioritize direct tool_calls, otherwise parse the content.
         decision_source = tool_call_decision_from_message if tool_call_decision_from_message else raw_response_content
 
         try:
-            # If the source is already a list (from tool_calls), wrap it. Otherwise, try to parse from string.
             if isinstance(decision_source, list):
                 tool_call_decision = {"tool_calls": decision_source}
-            else: # It's a string, needs parsing
+            else:
                 tool_call_decision = json.loads(decision_source)
         except (json.JSONDecodeError, TypeError):
-            # If it fails, treat it as a raw string to be normalized
             tool_call_decision = raw_response_content
 
         normalized_decision = _normalize_dispatcher_response(tool_call_decision)
 
+        # --- START: ROBUST CORRECTION ---
+        # Deterministically inject the image URL if the LLM decides to use the upscale tool.
+        if request.contextual_image_url and normalized_decision.get("tool_calls"):
+            for tool_call in normalized_decision["tool_calls"]:
+                if tool_call.get("function", {}).get("name") == "upscale_image":
+                    # Ensure 'arguments' dictionary exists before modification
+                    if "arguments" not in tool_call["function"]:
+                        tool_call["function"]["arguments"] = {}
+                    # Force-inject or overwrite the image_url from the trusted context
+                    tool_call["function"]["arguments"]["image_url"] = request.contextual_image_url
+                    logging.info("Deterministically injected contextual_image_url for upscale_image call.")
+        # --- END: ROBUST CORRECTION ---
+
         logging.info(f"Dispatcher raw decision: {raw_response_content}")
-        logging.info(f"Dispatcher normalized decision: {normalized_decision}")
+        logging.info(f"Dispatcher final decision: {normalized_decision}") # Changed from "normalized" to "final"
         return normalized_decision
 
     except Exception as e:
