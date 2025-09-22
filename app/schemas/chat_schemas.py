@@ -59,6 +59,7 @@ class ChatRequest(BaseModel):
     system: Optional[str] = Field(None, description="The complete system prompt to use for this specific interaction.")
     tools: Optional[List[Any]] = Field(None, description="A list of tools the model can use, in the format expected by the provider (e.g., Ollama).")
     attached_files: Optional[List[AttachedFile]] = Field(None, description="A list of files attached to the user's message.")
+    contextual_image_url: Optional[str] = Field(None, description="An image URL found in the immediate context of the user's message.")
 
 # --- NOUVEAU: Schéma de Requête pour le Synthétiseur ---
 class SynthesizeRequest(BaseModel):

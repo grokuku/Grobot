@@ -1,6 +1,6 @@
 #### Fichier : project_context.md
 # CONTEXTE MAÎTRE DU PROJET "GroBot"
-#### Date de dernière mise à jour : 2025-09-20
+#### Date de dernière mise à jour : 2025-09-22
 #### Ce fichier sert de référence unique et doit être fourni en intégralité au début de chaque session.
 
 ---
@@ -433,46 +433,7 @@ else:
 
 ## 9. SESSIONS DE DÉVELOPPEMENT (Historique)
 
-*Les sessions antérieures à la 109 sont omises pour la brièveté.*
-
-### 109. Intégration d'un Nouvel Outil Externe et Amélioration de l'Expérience Utilisateur (Session du 2025-09-16)
-*   **Résumé :** Cette session a été consacrée à l'intégration d'un outil externe (`MCP-Contest`) et à la résolution de plusieurs problèmes d'expérience utilisateur liés à la commande `/image`.
-    1.  **Intégration et Débogage de l'Outil Externe :** L'intégration d'un nouvel outil MCP a révélé plusieurs bugs successifs dans le client `bot_process.py`. Une erreur `404 Not Found` a d'abord indiqué une faute de frappe dans l'URL du serveur MCP. Ensuite, des erreurs de type (`TypeError`, `KeyError`) ont montré que la réponse du LLM Répartiteur pour ce nouvel outil n'était pas dans le format standard attendu. Le code a été fiabilisé pour parser correctement la réponse (même si elle est une chaîne JSON) et pour normaliser la structure des appels d'outils, rendant le client résilient à des formats de réponse LLM légèrement différents.
-    2.  **Amélioration de l'Expérience de la Commande `/image` :** Une discussion approfondie a eu lieu pour rendre les réponses à la commande `/image` plus naturelles et cohérentes.
-        *   **Problème 1 (Message d'Attente) :** Le message "Okay, let me get started..." a été identifié comme étant générique, en anglais et ne respectant pas la personnalité du bot. La cause est un prompt statique utilisé par l'**Acknowledge-Synthesizer**.
-        *   **Problème 2 (Mention de l'Utilisateur) :** La mention "Request from @User" a été jugée non naturelle. Une première suggestion de la supprimer a été écartée car elle recréait le problème initial (aucune mention). Une seconde suggestion de toujours mentionner l'utilisateur a été écartée car elle serait trop répétitive.
-        *   **Solution finale retenue :** Une approche contextuelle a été conçue. L'instruction système du **Synthétiseur (côté `agent_logic.py`)** sera modifiée pour n'exiger une mention de l'utilisateur que si sa réponse suit immédiatement l'exécution d'un outil (`role: tool`). De plus, le contexte de la commande `/image` envoyé au LLM **(côté `bot_process.py`)** sera transformé d'une commande brute en une phrase conversationnelle pour encourager une réponse naturelle.
-        *   **Problème 3 (URL Redondante) :** La présence de l'URL de l'image dans le texte de la réponse a été jugée superflue. La solution retenue est de filtrer la sortie de l'outil **(côté `bot_process.py`)** pour ne jamais inclure une URL d'image dans le contenu textuel passé au Synthétiseur.
-*   **Résultat :** **SUCCÈS.** L'outil externe est maintenant fonctionnel. Une solution complète et robuste a été conçue pour améliorer radicalement l'expérience utilisateur de la commande `/image`, bien qu'elle n'ait pas encore été implémentée.
-*   **État Actuel :** La base de code est stable. L'intégration d'outils est maintenant plus robuste. Un plan d'action clair existe pour la prochaine session.
-
-### 110. Correction Critique de la Régression des Outils et Intégration du Streaming Asynchrone (Session du 2025-09-18)
-*   **Résumé :** La session a débuté par une interruption critique : la spécification de l'outil `MCP_GenImage` a changé pour un modèle de streaming asynchrone via WebSockets. Cela a invalidé la logique existante et a nécessité une refactorisation immédiate (PRIO 0).
-    1.  **Adaptation du Client (`bot_process.py`) :** La dépendance `websockets` a été ajoutée. La logique d'appel d'outil externe a été entièrement revue pour gérer le nouveau protocole : détection de la réponse `stream/start`, connexion au WebSocket, et écoute des messages `stream/chunk` pour le résultat final. Le code a été corrigé une seconde fois pour s'adapter à une mise à jour de la spécification.
-    2.  **Découverte de Régression 1 (Répartiteur) :** Le test a révélé que le Répartiteur (Dispatcher) ne reconnaissait plus les demandes d'images en langage naturel, provoquant une réponse conversationnelle erronée ("Voilà l'image !"). La cause était une réponse "hallucinée" en texte brut par le LLM.
-    3.  **Correction du Répartiteur (`agent_logic.py`) :** Le prompt système du Répartiteur a été renforcé pour être plus strict. Une logique de normalisation de la réponse a été ajoutée pour pouvoir parser et corriger les réponses en texte brut du LLM, rendant le composant plus résilient.
-    4.  **Découverte de Régression 2 (Proxy) :** Le test de la commande `/image` a révélé une erreur `404 Not Found` provenant du proxy d'outils, qui ne parvenait pas à contacter le serveur MCP.
-    5.  **Correction du Proxy (`tools_api.py`) :** Le proxy a été modifié pour devenir "transparent", transmettant la réponse du serveur MCP (succès, erreur, ou `stream/start`) directement au client sans l'interpréter. Cela fiabilise la chaîne de communication.
-    6.  **Diagnostic Final :** L'analyse des logs après les correctifs a montré que la cause racine de l'erreur 404 est une mauvaise configuration du `host` du serveur MCP dans la base de données, empêchant la communication entre les conteneurs `app` et `mcp-genimage`.
-*   **Résultat :** **EN COURS.** Le code a été considérablement fiabilisé pour gérer le nouveau protocole de streaming et les régressions découvertes. Cependant, la génération d'images reste non fonctionnelle en attente d'une correction de la configuration en base de données.
-
-### 111. Débogage Méthodique de la Chaîne de Communication Asynchrone (Session du 2025-09-19)
-*   **Résumé :** Cette session a été consacrée à la résolution d'un bug bloquant empêchant la génération d'images, en adoptant une approche de vérification systématique.
-    1.  **Validation de la Connectivité :** Un test `curl` depuis le conteneur `app` vers le serveur MCP a confirmé que la connectivité réseau et la résolution de nom de base étaient fonctionnelles, invalidant la première hypothèse d'un problème de configuration réseau.
-    2.  **Diagnostic du Problème WebSocket :** Le succès du test `curl` a déplacé l'attention sur l'URL du WebSocket générée par le serveur MCP. Le diagnostic a révélé que le serveur construisait une URL interne (`ws://mtp-sd-swarm00...`) qui n'était pas accessible par le client `bot_process.py` tournant sur une autre machine. Le serveur MCP a été corrigé pour utiliser une URL de base publique configurable.
-    3.  **Correction de l'Incompatibilité d'Environnement :** Une fois la connectivité WebSocket établie, une `TypeError` a émergé. Une investigation méthodique (via `pip freeze` et `python --version`) a révélé que le problème n'était ni la version de Python ni celle de la bibliothèque `websockets`, mais une incompatibilité entre la boucle d'événements `asyncio` gérée par `discord.py` et l'appel de fonction moderne utilisé par `websockets`. Le code client (`bot_process.py`) a été corrigé pour retirer l'argument incompatible.
-    4.  **Correction d'un Bug de Référence :** Un `AttributeError` mineur dans `agent_logic.py` (appel à `crud_bots.get_global_settings` au lieu de `crud_settings`) a été identifié et corrigé.
-    5.  **Fiabilisation du Dispatcher :** Le test final a montré que le LLM Dispatcher enveloppait sa réponse JSON dans des blocs de code Markdown, ce qui faisait échouer le parsing. La logique de normalisation dans `agent_logic.py` a été renforcée pour gérer ce cas de figure.
-*   **Résultat :** **SUCCÈS.** La chaîne de communication de bout en bout est maintenant fonctionnelle et robuste. La génération d'images est de nouveau opérationnelle, que ce soit via une commande `/image` ou une requête en langage naturel.
-
-### 112. Fiabilisation du Synthétiseur et Amélioration de l'Expérience Utilisateur (Session du 2025-09-19)
-*   **Résumé :** Cette session a été consacrée à la résolution d'un bug critique de stabilité et à l'implémentation des améliorations de l'expérience utilisateur (UX) qui étaient en attente.
-    1.  **Diagnostic et Correction du Bug de Stabilité :** Un test de charge a révélé que le bot publiait parfois sa logique interne (`[TOOL_CALLS]...`) dans le chat. Le diagnostic a écarté une `race condition` dans `bot_process.py` et a identifié la cause racine comme une défaillance de fiabilité du LLM **Synthétiseur**. Sous certaines conditions, ce dernier "hallucinait" et régurgitait une partie de son contexte d'entrée au lieu de synthétiser une réponse. Le bug a été corrigé en renforçant le prompt système du Synthétiseur (`agent_logic.py`) avec une règle interdisant explicitement la reproduction de structures de données brutes. Un test de charge a validé le correctif.
-    2.  **Suppression de l'URL Redondante :** Le problème de l'URL de l'image apparaissant dans la réponse textuelle a été résolu. La logique dans `bot_process.py` a été modifiée pour nettoyer le résultat de l'outil de génération d'images de toute URL avant de passer le texte au Synthétiseur.
-    3.  **Ajout du Contexte à la Réponse :** Pour améliorer l'UX, le prompt du Synthétiseur a été modifié pour exiger qu'il inclue un très bref résumé du sujet de l'image générée, basé sur le prompt original de l'utilisateur, rendant la réponse plus informative et naturelle.
-    4.  **Correction de Régression ChromaDB :** Une erreur `TypeError` inattendue (`expected str instance, list found`) a été identifiée. Le diagnostic a révélé une mauvaise gestion du format de réponse de ChromaDB dans `agent_logic.py`. Le code a été corrigé pour parser correctement la structure de liste imbriquée renvoyée par la base de données vectorielle.
-*   **Résultat :** **SUCCÈS.** Le bot est désormais stable sous charge. Les réponses aux générations d'images sont propres, informatives, et ne contiennent plus d'artefacts techniques. Une régression critique a été corrigée.
-*   **État Actuel :** La base de code est stable et les fonctionnalités liées aux outils d'imagerie sont considérées comme matures.
+*Les sessions antérieures à la 113 sont omises pour la brièveté.*
 
 ### 113. Correction de l'Expérience Utilisateur et de Régression Critique du Backend (Session du 2025-09-20)
 *   **Résumé :** La session a débuté par la correction d'un bug prioritaire de l'interface utilisateur. La modale de configuration des outils ne permettait pas le défilement et, plus important, son bouton "Sauvegarder" ne déclenchait pas de sauvegarde réelle, créant un flux de travail contre-intuitif. Après une série de corrections qui a mené à une régression critique du backend (une `SyntaxError` dans `bots_api.py` due à une commande `sed` défectueuse), le problème a été résolu de manière méthodique.
@@ -480,25 +441,39 @@ else:
     2.  **Correction de la Régression :** Le fichier `bots_api.py`, qui avait été corrompu et empêchait le serveur de démarrer, a été restauré avec une version complète et correcte, remettant l'application en ligne.
 *   **Résultat :** **SUCCÈS.** L'application est de nouveau stable. Le bug de l'interface de configuration des outils est entièrement résolu, améliorant significativement l'expérience utilisateur pour l'administration des bots.
 
+### 114. Débogage et Amélioration de l'Interface de Configuration des Outils (Session du 2025-09-22)
+*   **Résumé :** Cette session a été consacrée à la résolution d'un bug de l'interface utilisateur révélé par l'ajout de plusieurs outils sur un même serveur MCP.
+    1.  **Diagnostic de la Découverte d'Outils :** Il a été confirmé que le backend de `GroBot` ne découvrait pas tous les outils de `MCP_GenImage`. Un test `curl` a permis de diagnostiquer que le problème venait d'une mauvaise configuration dans la base de données de `MCP_GenImage` (les "Render Types" pour l'upscale n'étaient pas marqués comme visibles), qui a été corrigée.
+    2.  **Diagnostic du Bug d'Affichage :** Une fois tous les outils découverts, la modale de configuration des outils dans `GroBot` est devenue inutilisable car le contenu débordait sans barre de défilement.
+    3.  **Amélioration de l'Expérience Utilisateur :** Sur demande, l'objectif a été élargi pour non seulement corriger le défilement mais aussi pour ajouter une distinction visuelle claire (sous forme de "cartes") entre chaque outil dans la liste.
+    4.  **Correction Itérative (CSS/JS) :** Un processus de débogage méthodique a été nécessaire. Après avoir vérifié que le cache n'était pas en cause, l'inspection du DOM a révélé que la structure HTML était correcte mais que la mise en page CSS ne s'appliquait pas comme prévu. Le problème a été isolé à un comportement de `flexbox` sur la balise `<form>`, qui empêchait le conteneur interne de grandir et d'activer son propre défilement.
+*   **Résultat :** **SUCCÈS.** Les fichiers `style.css` et `ui.js` ont été corrigés. La modale de configuration des outils est désormais robuste, capable d'afficher un grand nombre d'outils de manière claire, distincte et avec un défilement fonctionnel.
+
+### 115. Intégration de l'Outil d'Upscale via Détection Contextuelle et Commande Slash (Session du 2025-09-22)
+*   **Résumé :** L'objectif de la session était d'intégrer pleinement l'outil `upscale_image`. Le travail a suivi un flux logique complet, du client au backend, et a inclus la résolution d'une régression et d'un problème de déploiement.
+    1.  **Logique Client (`bot_process.py`) :** Le client a été modifié pour détecter une image pertinente dans le contexte d'un message (pièces jointes du message ou du message de référence) et transmettre son URL au backend.
+    2.  **Correction de Régression :** Une première version de cette modification a introduit une régression (`NameError`), qui a été rapidement identifiée et corrigée.
+    3.  **Schéma Backend (`chat_schemas.py`) :** Le schéma de la requête a été étendu pour accepter la nouvelle URL d'image contextuelle.
+    4.  **Logique Backend (`agent_logic.py`) :** Le prompt du Répartiteur a été enrichi pour qu'il soit informé de la présence d'une image et qu'il sache comment utiliser l'outil `upscale_image` en conséquence.
+    5.  **Intégration Discord (`bot_process.py`) :** Une nouvelle commande `/upscale` a été créée, permettant un appel direct de l'outil avec gestion automatique de l'image la plus récente dans le salon si aucune URL n'est fournie.
+    6.  **Diagnostic de Déploiement :** La nouvelle commande n'apparaissant pas dans Discord, le problème a été diagnostiqué comme un potentiel cache de build Docker. Une reconstruction forcée de l'image et du conteneur du service `discord-bot-launcher` a résolu le problème et a fait apparaître la commande.
+*   **Résultat :** **SUCCÈS.** L'outil `upscale_image` est désormais pleinement intégré et accessible aux utilisateurs de manière intuitive, soit en répondant à une image, soit en utilisant la commande dédiée `/upscale`.
+
 ---
 
 ## 10. État Actuel et Plan d'Action
 
 ### État Actuel (Bugs Connus et Statut)
-*   **CORRIGÉ (Interface de Configuration des Outils) :** La modale de configuration des outils est désormais fonctionnelle, avec un défilement correct et un flux de sauvegarde immédiat et intuitif. (Session 113)
+*   **IMPLÉMENTÉ (Intégration de l'Outil d'Upscale) :** L'outil `upscale_image` est désormais pleinement fonctionnel. Il peut être déclenché contextuellement (en répondant à un message contenant une image) ou directement via la nouvelle commande `/upscale`. (Session 115)
+*   **CORRIGÉ (Interface de Configuration des Outils) :** La modale de configuration des outils est désormais fonctionnelle, avec un défilement correct, une distinction visuelle claire entre les outils, et prête pour l'ajout de nouveaux outils. (Session 114)
 *   **CORRIGÉ (Stabilité du Synthétiseur) :** Le Synthétiseur est maintenant fiable sous charge et ne "fuit" plus sa logique interne dans le chat. (Session 112)
 *   **CORRIGÉ (URL d'Image Redondante) :** La réponse finale à une génération d'image ne contient plus de lien URL redondant. (Session 112)
 *   **CORRIGÉ (Régression ChromaDB) :** L'erreur `TypeError` lors de l'interrogation de la mémoire à long terme (LTM) est résolue. (Session 112)
 *   **CORRIGÉ (Communication Inter-Services) :** La communication entre le service `app` et les serveurs d'outils externes (MCP) est entièrement fonctionnelle, y compris via WebSocket. (Session 111)
-*   **CORRIGÉ (Fiabilité du Répartiteur) :** La logique dans `agent_logic.py` gère correctement les réponses LLM non-conformes. (Session 111)
-*   **CORRIGÉ (Intégration d'Outils) :** Le client `bot_process.py` gère correctement les différents formats de réponse du Répartiteur. (Session 109)
-*   **CORRIGÉ (Réponses d'Images Unifiées) :** Le bot envoie les images et le texte dans un message unique et cohérent. (Session 107)
-*   **CORRIGÉ (Streaming Asynchrone) :** Le client `bot_process.py` et le proxy `tools_api.py` sont compatibles avec le protocole de streaming asynchrone MCP. (Session 110)
 *   **EN ATTENTE (Incohérence de la Personnalité) :** Le message d'attente (`Acknowledge-Synthesizer`) pour les outils lents est générique ("Got it. Starting..."), en anglais, et ne respecte pas la personnalité/langue du bot. C'est le dernier élément non personnalisé du flux.
 *   **FAIBLE (Fiabilité de l'Interface de Test) :** Les outils ne fonctionnent pas lorsqu'ils sont appelés depuis la fenêtre de test du frontend.
 *   **FAIBLE (CRUD des Bots) :** La suppression d'un bot depuis l'interface est impossible.
 
 ### Nouveau Plan d'Action (Priorités)
 
-1.  **PRIO 1 (Finalisation de l'Expérience Utilisateur) :**
-    *   **Objectif :** Finaliser l'amélioration de l'expérience utilisateur en personnalisant le message d'attente (`Acknowledge-Synthesizer`). Le prompt système doit être modifié pour intégrer la personnalité du bot et générer un message d'attente cohérent en termes de ton et de langue.
+*Le plan d'action sera redéfini au début de la prochaine session en fonction des priorités.*

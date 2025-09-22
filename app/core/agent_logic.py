@@ -62,6 +62,7 @@ You are a specialized AI model acting as a tool dispatcher. Your SOLE PURPOSE is
 
 ## Tool Capabilities Guide
 - **Image Generation:** If the user asks to 'draw', 'create an image', 'generate a picture', 'dessiner', 'créer une image', 'génère une image', 'fait moi une image', etc., you MUST use the `generate_image` tool.
+- **Image Upscaling:** If an image is present in the context and the user asks to 'improve', 'enhance', 'upscale', 'fix', 'make it better', 'améliore', 'corrige', etc., you MUST use the `upscale_image` tool.
 - **Time Information:** If the user asks for the current time, date, or day, you MUST use the time tool.
 - **User Information:** If the user asks for information about a specific person in the chat, you MUST use the user information tool.
 
@@ -422,8 +423,21 @@ async def get_dispatch_decision(request: chat_schemas.ChatRequest, db: Session) 
             return {"error": "No LLM model configured."}
 
         location_context, files_context, memory_context = await _build_common_context(request, db, bot)
+        
+        # --- MODIFICATION START: Inject Contextual Image URL ---
+        image_context_info = ""
+        if request.contextual_image_url:
+            image_context_info = (
+                "## Contextual Image\n"
+                f"A relevant image has been detected in the conversation context. Its URL is: {request.contextual_image_url}\n"
+                "If the user's request seems to refer to this image (e.g., 'improve this', 'enhance it', 'upscale this'), "
+                "you MUST use an appropriate tool like `upscale_image` and pass this URL to it.\n\n"
+            )
+            logging.info(f"Injecting contextual image URL into dispatcher prompt: {request.contextual_image_url}")
+        # --- MODIFICATION END ---
+
         bot_personality_prompt = request.system or bot.system_prompt or ""
-        final_system_prompt = (f"{DISPATCHER_SYSTEM_PROMPT}\n\n{location_context}{files_context}{memory_context}{bot_personality_prompt}")
+        final_system_prompt = (f"{DISPATCHER_SYSTEM_PROMPT}\n\n{location_context}{files_context}{image_context_info}{memory_context}{bot_personality_prompt}")
 
         discovered_mcp_tools = await discover_mcp_tools(bot.mcp_servers or [])
         ollama_formatted_mcp_tools = _convert_mcp_tools_to_ollama_format(discovered_mcp_tools)

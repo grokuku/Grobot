@@ -797,7 +797,7 @@ function generateFormFromSchema(schema, currentData, container) {
     }
     const properties = schema.properties || {};
     if (Object.keys(properties).length === 0) {
-        container.innerHTML = '<p>This tool server has no configurable options.</p>';
+        container.innerHTML = '<p>This tool has no configurable default arguments.</p>';
         return;
     }
     for (const key in properties) {
@@ -812,11 +812,12 @@ function generateFormFromSchema(schema, currentData, container) {
         let input;
         switch (prop.type) {
             case 'boolean':
+                fieldContainer.classList.add('form-field-inline');
+                const switchLabel = document.createElement('label');
+                switchLabel.className = 'switch';
                 input = document.createElement('input');
                 input.type = 'checkbox';
                 input.checked = currentValue || false;
-                const switchLabel = document.createElement('label');
-                switchLabel.className = 'switch';
                 const slider = document.createElement('span');
                 slider.className = 'slider round';
                 switchLabel.append(input, slider);
@@ -858,16 +859,18 @@ async function showMcpConfigModal(server, currentConfig, saveCallback) {
             <span class="close-button">&times;</span>
             <h2>Configure: ${server.name}</h2>
             <form id="mcp-config-form" class="bot-settings-form">
-                <fieldset>
-                    <legend>Server-Side Configuration</legend>
-                    <div id="server-config-container"><p>Loading config schema...</p></div>
-                </fieldset>
-                <fieldset>
-                    <legend>Bot-Specific Tool Overrides</legend>
-                    <p class="form-help">Configure bot behavior for specific tools. This does not affect other bots using this server.</p>
-                    <div id="tool-overrides-container"><p>Loading tools...</p></div>
-                </fieldset>
-                <button type="submit" class="primary-button">Save Configuration</button>
+                <div class="modal-body">
+                    <fieldset>
+                        <legend>Server-Side Configuration</legend>
+                        <div id="server-config-container"><p>Loading config schema...</p></div>
+                    </fieldset>
+                    <fieldset>
+                        <legend>Bot-Specific Tool Overrides</legend>
+                        <p class="form-help">Configure bot behavior for specific tools. This does not affect other bots using this server.</p>
+                        <div id="tool-overrides-container"><p>Loading tools...</p></div>
+                    </fieldset>
+                </div>
+                <button type="submit" class="primary-button" style="margin-top: 1rem;">Save Configuration</button>
             </form>
         </div>
     `;
@@ -890,13 +893,16 @@ async function showMcpConfigModal(server, currentConfig, saveCallback) {
 
     if (schemaResult.status === 'fulfilled') {
         schema = schemaResult.value;
-        generateFormFromSchema(schema, currentConfig, serverConfigContainer);
+        if (Object.keys(schema.properties || {}).length > 0) {
+            generateFormFromSchema(schema, currentConfig, serverConfigContainer);
+        } else {
+            serverConfigContainer.innerHTML = '<p>This tool server has no configurable options.</p>';
+        }
     } else {
         serverConfigContainer.innerHTML = `<p class="error">Failed to load config schema: ${schemaResult.reason.message}</p>`;
     }
 
     if (toolsResult.status === 'fulfilled') {
-        // MODIFIED: The API now returns a direct array of tools.
         const tools = toolsResult.value;
         toolOverridesContainer.innerHTML = '';
         if (!tools || tools.length === 0) {
@@ -906,12 +912,12 @@ async function showMcpConfigModal(server, currentConfig, saveCallback) {
             tools.forEach(tool => {
                 const toolSettings = toolConfig[tool.name] || {};
                 const toolContainer = document.createElement('div');
-                toolContainer.className = 'tool-override-item';
+                toolContainer.className = 'tool-config-card';
                 toolContainer.dataset.toolName = tool.name;
                 toolContainer.innerHTML = `
-                    <div class="tool-override-header">
-                        <span class="tool-name">${tool.name}</span>
-                        <p class="form-help">${tool.description || 'No description available.'}</p>
+                    <div class="tool-config-header">
+                        <h4>${tool.name}</h4>
+                        <p>${tool.description || 'No description available.'}</p>
                     </div>
                     <div class="tool-override-controls">
                         <div class="form-field-inline">
@@ -929,7 +935,6 @@ async function showMcpConfigModal(server, currentConfig, saveCallback) {
                         </div>
                     </div>
                 `;
-                // This is where the magic happens: generate form for inputSchema
                 const inputSchemaContainer = document.createElement('div');
                 inputSchemaContainer.className = 'tool-input-schema-container';
                 if (tool.inputSchema) {
@@ -948,7 +953,6 @@ async function showMcpConfigModal(server, currentConfig, saveCallback) {
         e.preventDefault();
         const newConfig = {};
 
-        // Part 1: Handle server-side configuration (from schema)
         if (schema) {
             for (const key in (schema.properties || {})) {
                 const prop = schema.properties[key];
@@ -964,14 +968,11 @@ async function showMcpConfigModal(server, currentConfig, saveCallback) {
             }
         }
 
-        // Part 2: Handle bot-specific tool overrides (meta and arguments)
         const tool_config = {};
         const default_arguments = {};
 
-        modal.querySelectorAll('.tool-override-item').forEach(item => {
+        modal.querySelectorAll('.tool-config-card').forEach(item => {
             const toolName = item.dataset.toolName;
-
-            // 2a. Process meta-config (is_slow, reaction_emoji)
             const isSlow = item.querySelector(`#is-slow-${toolName}`).checked;
             const reactionEmoji = item.querySelector(`#reaction-emoji-${toolName}`).value.trim();
             if (isSlow || reactionEmoji) {
@@ -981,7 +982,6 @@ async function showMcpConfigModal(server, currentConfig, saveCallback) {
                 };
             }
 
-            // 2b. Process default arguments from the tool's inputSchema
             const toolArguments = {};
             let hasToolArguments = false;
             const inputSchemaContainer = item.querySelector('.tool-input-schema-container');

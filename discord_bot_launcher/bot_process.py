@@ -14,10 +14,12 @@ import websockets # Import for asynchronous tool streaming
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 from types import SimpleNamespace
+from PIL import Image
 
 # --- Constants ---
 DISCORD_MSG_LIMIT = 2000
 STREAM_EDIT_DELAY = 1.3 # Seconds between message edits to avoid rate limits
+SAFE_COMPRESSION_THRESHOLD = 7.5 * 1024 * 1024
 
 # --- Logging Configuration ---
 BOT_ID = None
@@ -649,16 +651,59 @@ async def execute_tools_and_synthesize(client: discord.Client, message: discord.
                             images_found += 1
                             has_media_output = True
                             image_file, error_msg = await _download_image_to_discord_file(url_to_download)
+                            
+                            if image_file:
+                                # --- START: Proactive Image Compression Logic ---
+                                image_file.fp.seek(0)
+                                image_bytes = image_file.fp.read()
+                                image_size = len(image_bytes)
+                                
+                                reported_limit = message.guild.filesize_limit if message.guild else 8 * 1024 * 1024
+                                send_log("info", "image_size_check", {
+                                    "original_size": image_size,
+                                    "reported_limit": reported_limit,
+                                    "safe_threshold": SAFE_COMPRESSION_THRESHOLD
+                                })
+                                
+                                if image_size > SAFE_COMPRESSION_THRESHOLD:
+                                    send_log("info", "image_compression_triggered", {"original_size": image_size, "reason": "Exceeded safe threshold"})
+                                    try:
+                                        with Image.open(io.BytesIO(image_bytes)) as img:
+                                            if img.mode in ("RGBA", "P"):
+                                                img = img.convert("RGB")
+                                            
+                                            compressed_buffer = io.BytesIO()
+                                            limit = reported_limit
+                                            img.save(compressed_buffer, format='JPEG', quality=95, optimize=True)
+                                            
+                                            # --- CORRECTION: Capture size BEFORE rewinding the buffer ---
+                                            new_size = compressed_buffer.tell()
+                                            
+                                            if new_size < limit:
+                                                compressed_buffer.seek(0)
+                                                new_filename = (image_file.filename.rsplit('.', 1)[0] if '.' in image_file.filename else image_file.filename) + ".jpg"
+                                                image_file = discord.File(compressed_buffer, filename=new_filename)
+                                                send_log("info", "image_compression_success", {"new_size": new_size})
+                                            else:
+                                                error_msg = f"Image compression failed. The resulting file ({new_size} bytes) is still too large for this server's limit ({limit} bytes)."
+                                                send_log("warning", "image_compression_failed", {"original_size": image_size, "compressed_size": new_size, "limit": limit})
+                                                image_file = None
+                                    except Exception as comp_exc:
+                                        error_msg = f"An error occurred during image compression: {comp_exc}"
+                                        send_log("error", "image_compression_error", {"error": str(comp_exc)})
+                                        image_file = None
+                                else:
+                                    image_file.fp.seek(0)
+                                # --- END: Proactive Image Compression Logic ---
+
                             if image_file:
                                 files_to_attach.append(image_file)
+                            
                             if error_msg:
                                 text_parts.append(error_msg)
                             
                             # --- MODIFICATION START: Robust URL Cleaning ---
-                            # If an image was processed, clean any associated text content of URLs
-                            # to prevent them from appearing in the final response.
                             if text_content:
-                                # This regex removes both standalone URLs and Markdown image links.
                                 text_content = re.sub(r'!?\[.*?\]\(https?://\S+\)|https?://\S+', '', text_content).strip()
                             # --- MODIFICATION END ---
                                 
@@ -750,6 +795,33 @@ async def _sync_user_profile(message: discord.Message):
             error_details["status_code"] = e.response.status_code
             error_details["response_body"] = e.response.text
         send_log("warning", "profile_sync_failed", error_details)
+
+async def _get_contextual_image_url(message: discord.Message) -> Optional[str]:
+    """
+    Finds a relevant image URL for context, checking attachments in the current and referenced message.
+    """
+    # 1. Check current message attachments
+    for attachment in message.attachments:
+        if attachment.content_type and attachment.content_type.startswith("image/"):
+            return attachment.url
+
+    # 2. Check referenced message attachments if it exists and is resolved
+    if message.reference and isinstance(message.reference.resolved, discord.Message):
+        for attachment in message.reference.resolved.attachments:
+            if attachment.content_type and attachment.content_type.startswith("image/"):
+                return attachment.url
+    
+    return None
+
+async def _find_last_image_url_in_channel(channel: discord.abc.Messageable, limit: int = 10) -> Optional[str]:
+    """
+    Scans recent channel history to find the last posted image URL.
+    """
+    async for message in channel.history(limit=limit):
+        for attachment in message.attachments:
+            if attachment.content_type and attachment.content_type.startswith("image/"):
+                return attachment.url
+    return None
 
 async def send_response(original_message: discord.Message, content: str, files: Optional[List[discord.File]] = None) -> Optional[discord.Message]:
     """Sends a response, replying only if new messages have appeared in the channel."""
@@ -916,7 +988,8 @@ async def image(
             guild=interaction.guild,
             content=user_request_sentence, # Use the natural sentence here too
             attachments=[],
-            reply=interaction.channel.send
+            reply=interaction.channel.send,
+            reference=None # Slash commands don't have references
         )
 
         # Step 4: Delegate the entire execution to the robust, existing pipeline
@@ -924,6 +997,75 @@ async def image(
 
     except Exception as e:
         send_log("error", "slash_command_error", {"command": "image", "error": str(e), "traceback": traceback.format_exc()})
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Sorry, a critical error occurred.", ephemeral=True)
+        else:
+            await interaction.followup.send("Sorry, a critical error occurred.", ephemeral=True)
+
+@tree.command(name="upscale", description="Enhances or upscales an image using an AI model.")
+@app_commands.describe(
+    prompt="Optional. A textual description of how to improve the image.",
+    image_url="Optional. The direct URL of the image to upscale. If not provided, I will use the last image in the channel."
+)
+async def upscale(
+    interaction: discord.Interaction,
+    prompt: Optional[str] = None,
+    image_url: Optional[str] = None
+):
+    try:
+        await interaction.response.defer(thinking=False, ephemeral=True)
+
+        # Step 1: Find the target image URL
+        target_image_url = image_url
+        if not target_image_url:
+            target_image_url = await _find_last_image_url_in_channel(interaction.channel)
+
+        if not target_image_url:
+            await interaction.followup.send("I couldn't find an image to upscale. Please provide a URL or use this command in a channel with a recent image.", ephemeral=True)
+            return
+
+        # Step 2: Build arguments and context for the tool call
+        arguments = {"image_url": target_image_url}
+        if prompt:
+            arguments["prompt"] = prompt
+            user_request_sentence = f"The user {interaction.user.display_name} asked me to upscale an image with the instruction: \"{prompt}\"."
+        else:
+            user_request_sentence = f"The user {interaction.user.display_name} asked me to upscale an image."
+        
+        local_history = [{"role": "user", "content": user_request_sentence}]
+
+        # Step 3: Send an acknowledgement message
+        user_context = {"discord_id": str(interaction.user.id), "name": interaction.user.name, "display_name": interaction.user.display_name}
+        ack_payload = {"bot_id": BOT_ID, "user_context": user_context, "tool_name": "upscale_image"}
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as http_client:
+                ack_res = await http_client.post(ACKNOWLEDGE_API_URL, json=ack_payload)
+                if ack_res.is_success:
+                    await interaction.followup.send(ack_res.json().get("acknowledgement_message", "Got it. Starting image enhancement..."), ephemeral=True)
+                else:
+                    await interaction.followup.send("Got it. Starting image enhancement...", ephemeral=True)
+        except Exception:
+            await interaction.followup.send("Got it. Starting image enhancement...", ephemeral=True)
+
+        # Step 4: Prepare the payload for the main execution engine
+        tool_calls = [{"function": {"name": "upscale_image", "arguments": arguments}}]
+        
+        channel_context = {"context_type": "DIRECT_MESSAGE", "channel_id": str(interaction.channel_id)}
+        if interaction.guild:
+            channel_context.update({"context_type": "SERVER_CHANNEL", "server_id": str(interaction.guild.id), "server_name": interaction.guild.name, "channel_name": interaction.channel.name})
+
+        base_payload = {"bot_id": BOT_ID, "messages": local_history, "user_context": user_context, "channel_context": channel_context}
+
+        message_shim = SimpleNamespace(
+            id=interaction.id, channel=interaction.channel, author=interaction.user, guild=interaction.guild,
+            content=user_request_sentence, attachments=[], reply=interaction.channel.send, reference=None
+        )
+
+        # Step 5: Delegate execution to the main pipeline
+        await execute_tools_and_synthesize(client, message_shim, local_history, base_payload, tool_calls)
+
+    except Exception as e:
+        send_log("error", "slash_command_error", {"command": "upscale", "error": str(e), "traceback": traceback.format_exc()})
         if not interaction.response.is_done():
             await interaction.response.send_message("Sorry, a critical error occurred.", ephemeral=True)
         else:
@@ -964,10 +1106,11 @@ def create_discord_client():
             await message.add_reaction("🤔"); current_reaction = "🤔"
             
             channel_history = await _get_formatted_channel_history(message.channel, CONVERSATION_HISTORY_LIMIT)
+            contextual_image_url = await _get_contextual_image_url(message)
             uploaded_files = await handle_attachments(message)
             
             cleaned_content = re.sub(f'<@!?{client.user.id}>', '', message.content).strip()
-            if not cleaned_content and not uploaded_files: return
+            if not cleaned_content and not uploaded_files and not contextual_image_url: return
 
             persistent_history = chat_histories.get(message.channel.id, [])
             # --- START RACE CONDITION FIX ---
@@ -983,6 +1126,10 @@ def create_discord_client():
                 channel_context.update({"context_type": "SERVER_CHANNEL", "server_id": str(message.guild.id), "server_name": message.guild.name, "channel_name": message.channel.name})
 
             base_payload = {"bot_id": BOT_ID, "messages": local_history, "user_context": user_context, "channel_context": channel_context, "tools": DISPATCHER_INTERNAL_TOOLS_DEFINITIONS, "channel_history": channel_history, "attached_files": uploaded_files or None}
+
+            if contextual_image_url:
+                base_payload["contextual_image_url"] = contextual_image_url
+                send_log("info", "contextual_image_detected", {"url": contextual_image_url})
 
             await message.remove_reaction(current_reaction, client.user)
             await message.add_reaction("💬"); current_reaction = "💬"
