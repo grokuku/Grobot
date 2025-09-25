@@ -216,14 +216,14 @@ DISPATCHER_INTERNAL_TOOLS_DEFINITIONS = [
 
 def _tool_list_server_channels(message: discord.Message, **kwargs) -> str:
     if not isinstance(message.channel, discord.TextChannel) or not message.guild:
-        return "This command can only be used in a server channel, not in a Direct Message."
+        return "Tool Error: The 'list_server_channels' tool cannot be used here because the conversation is a Direct Message. It requires a server context."
 
     text_channels = [f"#{channel.name}" for channel in message.guild.text_channels]
     return f"Here are the text channels on this server:\n" + "\n".join(text_channels) if text_channels else "No text channels found on this server."
 
 def _tool_get_user_info(message: discord.Message, user_identifier: str) -> str:
     if not message.guild:
-        return "This tool can only be used in a server."
+        return "Tool Error: The 'get_user_info' tool cannot be used here because the conversation is a Direct Message. It requires a server context."
 
     target_member = _resolve_user_identifier(message.guild, user_identifier)
 
@@ -247,7 +247,7 @@ def _tool_get_user_info(message: discord.Message, user_identifier: str) -> str:
 
 def _tool_get_server_layout(message: discord.Message, **kwargs) -> str:
     if not message.guild:
-        return "This tool can only be used in a server."
+        return "Tool Error: The 'get_server_layout' tool cannot be used here because the conversation is a Direct Message. It requires a server context."
 
     layout_parts = [f"# Layout for Server: {message.guild.name}\n"]
 
@@ -277,7 +277,7 @@ def _tool_get_server_layout(message: discord.Message, **kwargs) -> str:
 
 def _tool_get_user_profile(message: discord.Message, user_identifier: str) -> str:
     if not message.guild:
-        return "This tool is only available on a server."
+        return "Tool Error: The 'get_user_profile' tool cannot be used here because the conversation is a Direct Message. It requires a server context."
 
     target_member = _resolve_user_identifier(message.guild, user_identifier)
     if not target_member:
@@ -319,7 +319,7 @@ def _tool_get_user_profile(message: discord.Message, user_identifier: str) -> st
 
 def _tool_save_user_note(message: discord.Message, user_identifier: str, note: str, reliability_score: int) -> str:
     if not message.guild:
-        return "This tool is only available on a server."
+        return "Tool Error: The 'save_user_note' tool cannot be used here because the conversation is a Direct Message. It requires a server context."
 
     target_member = _resolve_user_identifier(message.guild, user_identifier)
     if not target_member:
@@ -765,9 +765,12 @@ async def execute_tools_and_synthesize(client: discord.Client, message: discord.
 async def _get_formatted_channel_history(channel: discord.abc.Messageable, limit: int) -> List[str]:
     if limit <= 0: return []
     history_messages = []
+    bot_name = BOT_CONFIG.get("name", "Bot") # Fallback to "Bot"
     try:
         async for msg in channel.history(limit=limit, before=None, oldest_first=False):
-            history_messages.append(f"[{msg.author.display_name} (@{msg.author.name})]: {msg.content}")
+            # MODIFICATION: Distinguish bot messages from user messages for the Gatekeeper's context.
+            author_name = bot_name if msg.author.id == client.user.id else msg.author.display_name
+            history_messages.append(f"[{author_name}]: {msg.content}")
     except Exception as e:
         send_log("warning", "history_fetch_failed", {"channel_id": channel.id, "error": str(e)})
         return []
@@ -1046,6 +1049,132 @@ class UpscaleControlView(View):
     async def on_timeout(self):
         await self.original_interaction.edit_original_response(content="Upscale options timed out.", view=None)
 
+# --- START: DESCRIBE IMAGE UX FLOW (VIEW) ---
+
+async def _trigger_describe_task(
+    interaction: discord.Interaction,
+    target: discord.Message,
+    image_url: str,
+    description_type: str,
+    language: str
+):
+    """Helper function to build and dispatch the describe_image tool call."""
+    try:
+        # The interaction for the followup must come from the button click, not the initial command.
+        followup_interaction = interaction 
+
+        arguments = {
+            "input_image_url": image_url,
+            "description_type": description_type,
+            "language": language
+        }
+
+        user_request_sentence = f"The user {interaction.user.display_name} asked me to describe an image."
+        local_history = [{"role": "user", "content": user_request_sentence}]
+
+        user_context = {"discord_id": str(interaction.user.id), "name": interaction.user.name, "display_name": interaction.user.display_name}
+        
+        ack_payload = {"bot_id": BOT_ID, "user_context": user_context, "tool_name": "describe_image"}
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as http_client:
+                ack_res = await http_client.post(ACKNOWLEDGE_API_URL, json=ack_payload)
+                if ack_res.is_success:
+                    await followup_interaction.followup.send(ack_res.json().get("acknowledgement_message", "Got it. Starting image analysis..."), ephemeral=True)
+                else:
+                    await followup_interaction.followup.send("Got it. Starting image analysis...", ephemeral=True)
+        except Exception:
+            await followup_interaction.followup.send("Got it. Starting image analysis...", ephemeral=True)
+
+        tool_calls = [{"function": {"name": "describe_image", "arguments": arguments}}]
+        
+        channel_context = {"context_type": "DIRECT_MESSAGE", "channel_id": str(interaction.channel_id)}
+        if interaction.guild:
+            channel_context.update({"context_type": "SERVER_CHANNEL", "server_id": str(interaction.guild.id), "server_name": interaction.guild.name, "channel_name": interaction.channel.name})
+
+        base_payload = {"bot_id": BOT_ID, "messages": local_history, "user_context": user_context, "channel_context": channel_context}
+
+        message_shim = SimpleNamespace(
+            id=target.id, channel=target.channel, author=interaction.user, guild=target.guild,
+            content=target.content, attachments=target.attachments, reply=target.channel.send, reference=target.to_reference()
+        )
+
+        asyncio.create_task(execute_tools_and_synthesize(client, message_shim, local_history, base_payload, tool_calls))
+
+    except Exception as e:
+        send_log("error", "trigger_describe_error", {"error": str(e), "traceback": traceback.format_exc()})
+        # Check if the interaction has already been responded to
+        if not interaction.response.is_done():
+                await interaction.response.send_message("Sorry, a critical error occurred while triggering the describe task.", ephemeral=True)
+        else:
+                await interaction.followup.send("Sorry, a critical error occurred while triggering the describe task.", ephemeral=True)
+
+class DescribeControlView(View):
+    def __init__(self, interaction: discord.Interaction, target: discord.Message, image_url: str):
+        super().__init__(timeout=300)
+        self.original_interaction = interaction
+        self.target = target
+        self.image_url = image_url
+        self.selected_type: Optional[str] = None
+        self.selected_language: Optional[str] = None
+
+        # Type Select Menu
+        self.type_select = Select(
+            placeholder="Choose the type of description...",
+            options=[
+                discord.SelectOption(label="Natural", value="natural", description="A human-like, conversational description."),
+                discord.SelectOption(label="Optimized", value="optimized", description="A prompt-engineered description for image generation.")
+            ], min_values=1, max_values=1
+        )
+        self.type_select.callback = self.type_select_callback
+        self.add_item(self.type_select)
+
+        # Language Select Menu
+        self.language_select = Select(
+            placeholder="Choose the output language...",
+            options=[
+                discord.SelectOption(label="English", value="en"),
+                discord.SelectOption(label="French", value="fr")
+            ], min_values=1, max_values=1
+        )
+        self.language_select.callback = self.language_select_callback
+        self.add_item(self.language_select)
+
+    async def type_select_callback(self, interaction: discord.Interaction):
+        self.selected_type = self.type_select.values[0]
+        await interaction.response.defer() 
+
+    async def language_select_callback(self, interaction: discord.Interaction):
+        self.selected_language = self.language_select.values[0]
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Start Description", style=discord.ButtonStyle.success)
+    async def start_button(self, interaction: discord.Interaction, button: Button):
+        if not self.selected_type or not self.selected_language:
+            await interaction.response.send_message("Please select both a description type and a language.", ephemeral=True)
+            return
+        
+        await interaction.response.defer(thinking=False, ephemeral=True)
+        
+        # Disable the view in the original message
+        for item in self.children:
+            item.disabled = True
+        await self.original_interaction.edit_original_response(content="Image analysis started...", view=self)
+        
+        # Trigger the actual task using the new interaction from the button click
+        await _trigger_describe_task(
+            interaction=interaction,
+            target=self.target,
+            image_url=self.image_url,
+            description_type=self.selected_type,
+            language=self.selected_language
+        )
+        self.stop()
+    
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        await self.original_interaction.edit_original_response(content="Description options timed out.", view=self)
+
 # --- START: ROBUST IMAGE DETECTION HELPER ---
 def _find_image_url_in_message(message: discord.Message) -> Optional[str]:
     """Robustly finds an image URL in a message by checking attachments, then embeds, then raw URLs in content."""
@@ -1177,6 +1306,26 @@ async def upscale_context_menu(interaction: discord.Interaction, target: discord
     except Exception as e:
         send_log("error", "context_menu_error", {"command": "Upscale Image", "error": str(e), "traceback": traceback.format_exc()})
         await interaction.response.send_message("Sorry, an error occurred while preparing the upscale options.", ephemeral=True)
+
+@tree.context_menu(name="Describe Image")
+async def describe_context_menu(interaction: discord.Interaction, target: discord.Message):
+    target_image_url = _find_image_url_in_message(target)
+
+    if not target_image_url:
+        await interaction.response.send_message("I couldn't find a valid image in the selected message to describe.", ephemeral=True)
+        return
+    
+    try:
+        view = DescribeControlView(
+            interaction=interaction,
+            target=target,
+            image_url=target_image_url
+        )
+        await interaction.response.send_message("Please select the description options:", view=view, ephemeral=True)
+    except Exception as e:
+        send_log("error", "context_menu_error", {"command": "Describe Image", "error": str(e), "traceback": traceback.format_exc()})
+        await interaction.response.send_message("Sorry, an error occurred while preparing the description options.", ephemeral=True)
+
 
 def create_discord_client():
     

@@ -10,7 +10,7 @@ import itertools
 import httpx
 
 from app.schemas import chat_schemas
-from app.database import crud_bots, crud_settings, crud_user_notes
+from app.database import crud_bots, crud_settings, crud_user_notes, crud_user_profiles
 from app.schemas.user_note_schemas import UserNoteCreate
 from app.database.chroma_manager import chroma_manager
 from app.core.llm.ollama_client import OllamaClient # Utilise notre client centralisé
@@ -53,18 +53,26 @@ DISPATCHER_SYSTEM_PROMPT = """## Your Role: Tool Dispatcher
 You are a specialized AI model acting as a tool dispatcher. Your SOLE PURPOSE is to analyze the user's message and decide if one or more of the available tools MUST be called to answer it. You do not, under any circumstances, generate a conversational reply. You must understand requests in different languages (like French) and map them to the correct tool.
 
 ## Critical Rules
-1.  **Your ONLY output MUST be a single, valid JSON object.** Your entire response must start with `{` and end with `}`.
-2.  **No Conversation:** You are forbidden from responding to the user. You must act as a silent router. If the user says "hello", you must not say "hello" back. Your only job is to determine if a tool is needed.
-3.  **Tool Priority:** Tools are the absolute source of truth. If the user's request can be fulfilled by a tool, you MUST call it. Your internal knowledge is irrelevant for this task.
-4.  **If a tool is needed:** Your JSON output MUST contain the key "tool_calls" with a list of the required tool calls. You must translate natural language requests (e.g., "make a picture of a bird") into the correct JSON format.
-5.  **If NO tool is needed:** Your JSON output MUST contain the key "tool_calls" with the value `null`.
-6.  **ABSOLUTE PROHIBITION:** Do not output any text, explanation, or conversational filler.
+1.  **CRITICAL AUTHOR ATTRIBUTION:** The author of the message is **ALWAYS** the person identified by the `[user:NAME]` prefix. Any other user mentioned within the message content (e.g., using `@SomeUser`) is the **subject** of the conversation, not the author. You **MUST** attribute the request to the author.
+2.  **Your ONLY output MUST be a single, valid JSON object. Your entire response must start with `{` and end with `}`. DO NOT wrap your JSON response in markdown code fences (e.g. ` ```json ... ``` `).**
+3.  **No Conversation:** You are forbidden from responding to the user. You must act as a silent router. If the user says "hello", you must not say "hello" back. Your only job is to determine if a tool is needed.
+4.  **Tool Priority:** Tools are the absolute source of truth. If the user's request can be fulfilled by a tool, you MUST call it. Your internal knowledge is irrelevant for this task.
+5.  **If a tool is needed:** Your JSON output MUST contain the key "tool_calls" with a list of the required tool calls. You must translate natural language requests (e.g., "make a picture of a bird") into the correct JSON format.
+6.  **If NO tool is needed:** Your JSON output MUST contain the key "tool_calls" with the value `null`.
+7.  **ABSOLUTE PROHIBITION:** Do not output any text, explanation, or conversational filler.
 
 ## Tool Capabilities Guide
 - **Image Generation:** If the user asks to 'draw', 'create an image', 'generate a picture', 'dessiner', 'créer une image', 'génère une image', 'fait moi une image', etc., you MUST use the `generate_image` tool.
 - **Image Upscaling:** If an image is present in the context and the user asks to 'improve', 'enhance', 'upscale', 'fix', 'make it better', 'améliore', 'corrige', etc., you MUST use the `upscale_image` tool.
 - **Time Information:** If the user asks for the current time, date, or day, you MUST use the time tool.
 - **User Information:** If the user asks for information about a specific person in the chat, you MUST use the user information tool.
+
+## Reliability Score Guide
+You MUST assign a reliability score based on the following scale:
+- **90-100 (Very High):** For explicit, unambiguous facts stated by the user about themselves (e.g., "My favorite color is blue," "I work as a software developer").
+- **70-89 (High):** For strong, logical inferences based on the users statements (e.g., if the user talks about debugging their React app, a note like "User is familiar with React" is appropriate).
+- **40-69 (Medium):** For subjective information, opinions, or intentions that might change over time (e.g., "I love pineapple pizza," "Im thinking of learning guitar").
+- **10-39 (Low):** For information that is likely a joke, sarcasm, hyperbole, or highly unreliable third-party information (e.g., "I can fly").
 
 ## Examples
 
@@ -112,14 +120,16 @@ Your REQUIRED output:
 
 SYNTHESIZER_SYSTEM_PROMPT = """## Core Directives & Rules
 1.  **You are a helpful AI assistant operating within the Discord chat platform.** All interactions happen inside this context.
-2.  **CRITICAL RULE: Information from tools, which appears in the conversation history with the role 'tool', is the absolute source of truth.** It overrides your internal knowledge. You MUST use this information to formulate your answer without expressing surprise or doubt.
-3.  **You are in a multi-user channel. Pay strict attention to the [user:NAME] prefixes in the conversation history.** Each name represents a unique individual. You MUST track the context for each user separately and address them by their name when appropriate to avoid confusion.
-4.  **Your primary role is to synthesize all the information provided (user query, conversation history, tool results) into a clear, helpful, and natural-sounding conversational response.**
-5.  **ABSOLUTE REQUIREMENT FOR TOOL RESPONSES: When your response is the first thing you say after a message with `role: tool`, your response MUST begin by mentioning the user who made the original request. The user's name can be found in the [user:NAME] prefix of the last message with `role: user`.**
+2.  **CRITICAL CONTEXT RULE: The user's last message may be a direct, short follow-up to your previous message (e.g., "and after that?", "what about him?", "why?"). You MUST analyze the last few turns of the conversation to understand the full context before answering. NEVER treat a message as if it exists in isolation.**
+3.  **CRITICAL RULE: Information from tools, which appears in the conversation history with the role 'tool', is the absolute source of truth.** It overrides your internal knowledge. You MUST use this information to formulate your answer without expressing surprise or doubt.
+4.  **CRITICAL AUTHOR ATTRIBUTION: You are in a multi-user channel. The author of a message is ALWAYS the person identified by the `[user:NAME]` prefix.** Any other user mentioned in the message (e.g., `@SomeUser`) is a **subject** of conversation, not the author. You **MUST** always address your response to the author of the last message. **NEVER confuse the person speaking with the person being spoken about.**
+5.  **Your primary role is to synthesize all the information provided (user query, conversation history, tool results) into a clear, helpful, and natural-sounding conversational response.**
+6.  **ABSOLUTE REQUIREMENT FOR TOOL RESPONSES: When your response is the first thing you say after a message with `role: tool`, your response MUST begin by mentioning the user who made the original request. The user's name can be found in the [user:NAME] prefix of the last message with `role: user`.**
     - **Correct Format Example:** "@Holaf, here is the image you asked for."
     - **Incorrect Format Example:** "Here is the image you asked for."
-6.  **ABSOLUTE PROHIBITION: Never output raw data structures like `tool_calls` or internal logs in your response. Your role is to interpret the results of tools, not to show how they were called.**
-7.  **IMAGE SUMMARY REQUIREMENT: When the tool result confirms an image generation (e.g., it contains "[An image was generated...]"), your response MUST briefly state what the image represents, based on the user's original request. Do not repeat the full prompt.**
+7.  **ABSOLUTE PROHIBITION: Never output raw data structures like `tool_calls` or internal logs in your response. Your role is to interpret the results of tools, not to show how they were called.**
+8.  **ABSOLUTE PROHIBITION 2: You must not invent or display a tool call that you think should have happened. If you need information that you dont have (because no tool result is in the history), you MUST state that you cannot answer the question without that information. Do not show the user what you would have used.**
+9.  **IMAGE SUMMARY REQUIREMENT: When the tool result confirms an image generation (e.g., it contains "[An image was generated...]"), your response MUST briefly state what the image represents, based on the users original request. Do not repeat the full prompt.**
     - **Good Example:** "@Holaf, here is the illustration of Asuka Langley Soryu you asked for."
     - **Bad Example:** "@Holaf, here is your image."
 """
@@ -154,6 +164,13 @@ You are a specialized AI model that acts as an archivist. Your SOLE PURPOSE is t
 4.  **If a note should be saved:** Your JSON output MUST contain the key "tool_calls" with a list containing a single `save_user_note` tool call.
 5.  **If NO note is needed:** Your JSON output MUST contain the key "tool_calls" with the value `null`.
 6.  **ABSOLUTE PROHIBITION:** Do not output any text, explanation, or conversational filler. Your entire response must be ONLY the JSON object.
+
+## Reliability Score Guide
+You MUST assign a reliability score based on the following scale:
+- **90-100 (Very High):** For explicit, unambiguous facts stated by the user about themselves (e.g., "My favorite color is blue," "I work as a software developer").
+- **70-89 (High):** For strong, logical inferences based on the users statements (e.g., if the user talks about debugging their React app, a note like "User is familiar with React" is appropriate).
+- **40-69 (Medium):** For subjective information, opinions, or intentions that might change over time (e.g., "I love pineapple pizza," "Im thinking of learning guitar").
+- **10-39 (Low):** For information that is likely a joke, sarcasm, hyperbole, or highly unreliable third-party information (e.g., "I can fly").
 
 ## Examples
 
@@ -338,14 +355,21 @@ async def _build_common_context(request: Union[chat_schemas.ChatRequest, chat_sc
     bot_collection = chroma_manager.get_or_create_bot_collection(bot_id=bot.id)
     if bot_collection and last_user_message:
         try:
-            results = bot_collection.query(query_texts=[last_user_message], n_results=MEMORY_DEPTH)
-            if results and results.get('documents') and results['documents']:
-                retrieved_docs = results['documents'] # Chroma returns a list of lists
-                retrieved_docs.reverse()
-                formatted_history = "\n".join(retrieved_docs)
-                context_from_memory = f"Here are relevant excerpts from our previous conversation to give you context:\n---\n{formatted_history}\n---\n\n"
+            # *** MODIFICATION START: Fix ChromaDB query type error ***
+            # The query_texts parameter expects a list of strings. If last_user_message is None,
+            # it could cause an issue. We ensure it's always a list, even if empty.
+            query_texts_list = [last_user_message] if last_user_message else []
+            if query_texts_list:
+                results = bot_collection.query(query_texts=query_texts_list, n_results=MEMORY_DEPTH)
+                if results and results.get('documents') and results['documents']:
+                    retrieved_docs = results['documents'] # query returns a list of lists of docs
+                    retrieved_docs.reverse()
+                    formatted_history = "\n".join(retrieved_docs)
+                    context_from_memory = f"Here are relevant excerpts from our previous conversation to give you context:\n---\n{formatted_history}\n---\n\n"
+            # *** MODIFICATION END ***
         except Exception as e:
-            logging.warning(f"ChromaDB query failed for bot {bot.id}: {e}")
+            # Log the actual type being passed to help diagnose
+            logging.warning(f"ChromaDB query failed for bot {bot.id}. Error: {e}. Type of query_texts was: {type(last_user_message)}")
 
     return location_context_info, attached_files_info, context_from_memory
 
@@ -367,11 +391,16 @@ async def get_gatekeeper_decision(request: chat_schemas.ChatRequest, db: Session
         if not model_name:
             return {"error": "No LLM model configured."}
 
-        # *** MODIFICATION START ***
-        # Correctly assemble the full conversation context from both history and the current message.
+        # *** MODIFICATION START: Robustly format the current message with its author ***
         past_history = request.channel_history or []
-        current_message_content = [msg.content for msg in request.messages if msg.role == 'user']
-        full_context = past_history + current_message_content
+        
+        # Extract the current message from the payload. It is already pre-formatted by bot_process.py
+        current_message_list = [msg.content for msg in request.messages if msg.role == 'user']
+        
+        # Combine past history with the correctly formatted current message(s)
+        full_context = list(past_history) # Make a copy
+        full_context.extend(current_message_list)
+        
         conversation_history_str = "\n".join(full_context)
         # *** MODIFICATION END ***
 
@@ -486,7 +515,9 @@ async def get_dispatch_decision(request: chat_schemas.ChatRequest, db: Session) 
         # --- END: ROBUST CORRECTION ---
 
         logging.info(f"Dispatcher raw decision: {raw_response_content}")
-        logging.info(f"Dispatcher final decision: {normalized_decision}") # Changed from "normalized" to "final"
+        tool_names = [call.get('function', {}).get('name') for call in normalized_decision.get('tool_calls') or []]
+        decision_summary = f'Use tools: {tool_names}' if tool_names else 'No tool needed.'
+        logging.info(f'Dispatcher decision: {decision_summary}') # Changed from "normalized" to "final"
         return normalized_decision
 
     except Exception as e:
@@ -519,12 +550,14 @@ async def get_synthesized_response_stream(request: chat_schemas.SynthesizeReques
 
         bot_personality_prompt = request.system or bot.system_prompt or ""
         final_system_prompt = (f"{SYNTHESIZER_SYSTEM_PROMPT}\n\n{location_context}{files_context}{memory_context}{bot_personality_prompt}")
-        logging.info("Constructed final synthesizer system prompt.")
-
+        
+        # --- BLOC CORRIGÉ ---
         messages_for_llm = [
             {"role": "system", "content": final_system_prompt}
         ]
         messages_for_llm.extend([msg.model_dump(exclude_none=True) for msg in request.messages])
+        logging.info(f"Synthesizer invoked. History has {len(messages_for_llm)-1} turns.")
+        # --- FIN BLOC CORRIGÉ ---
 
         # CRITICAL: Tools are explicitly an empty list, preventing the Synthesizer from calling any.
         stream = client.chat_streaming_response(
@@ -686,7 +719,7 @@ async def run_archivist(db: Session, request: chat_schemas.ChatRequest, final_re
 
         tool_calls = decision.get("tool_calls")
         if not tool_calls:
-            logging.info("Archivist decision: No note to save.")
+            logging.info("Archivist decision: No new factual note to save.")
             return
 
         # Process the first valid tool call to save a note
@@ -700,17 +733,27 @@ async def run_archivist(db: Session, request: chat_schemas.ChatRequest, final_re
                     logging.warning(f"Archivist: Skipping invalid tool call with missing arguments: {args}")
                     continue
 
-                note_schema = UserNoteCreate(
-                    bot_id=request.bot_id, # *** CORRECTION ICI ***
+                # --- NOUVELLE LOGIQUE : Récupérer ou créer le profil utilisateur d'abord ---
+                user_profile = crud_user_profiles.get_or_create_user_profile(
+                    db=db,
+                    bot_id=request.bot_id,
                     user_discord_id=request.user_context.discord_id,
                     server_discord_id=request.channel_context.server_id,
-                    author_discord_id=request.user_context.discord_id, # The user is the author of their own facts
+                    username=request.user_context.name,
+                    display_name=request.user_context.display_name
+                )
+
+                # --- CORRIGÉ : Créer le schéma de note avec le user_profile_id ---
+                note_schema = UserNoteCreate(
+                    user_profile_id=user_profile.id, # Utilise l'ID du profil
+                    author_discord_id=request.user_context.discord_id,
                     note_content=note_content,
                     reliability_score=reliability_score
                 )
 
+
                 crud_user_notes.create_user_note(db=db, note=note_schema)
-                logging.info(f"Archivist successfully saved note for user {request.user_context.discord_id} on server {request.channel_context.server_id}.")
+                logging.info(f"Archivist SAVED NOTE for user {request.user_context.discord_id} on server {request.channel_context.server_id}.")
                 # We only process the first valid call
                 break
 

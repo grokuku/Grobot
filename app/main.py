@@ -14,7 +14,7 @@ from app.database.sql_session import engine
 import logging
 
 logging.basicConfig()
-logging.getLogger('sqlalchemy.engine').setLevel(logging.INFO)
+logging.getLogger('sqlalchemy.engine').setLevel(logging.WARNING)
 
 
 def create_db_and_tables():
