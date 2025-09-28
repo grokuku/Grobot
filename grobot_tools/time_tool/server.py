@@ -1,10 +1,10 @@
-# grobot_tools/time_tool/server.py
+# /app/grobot_tools/time_tool/server.py
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Any, Dict, Optional
 from datetime import datetime
-import pytz # Added for timezone handling
+import pytz
 
 app = FastAPI(
     title="GroBot - Time Tool",
@@ -12,95 +12,83 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# --- JSON-RPC Request Model ---
 class JsonRpcRequest(BaseModel):
     jsonrpc: str = "2.0"
     method: str
     params: Optional[Dict[str, Any]] = None
     id: int
 
-# --- Tool Definitions ---
-# MODIFIED: The tool's own inputSchema now contains the configurable parameters.
+# === MODIFICATION MAJEURE: Le paramètre est renommé de "timezone" à "location" ===
+# Cela rend la tâche de l'agent d'extraction beaucoup plus simple et directe.
 GET_CURRENT_TIME_TOOL = {
     "name": "get_current_time",
     "title": "Get Current Time",
-    "description": "Returns the current server date and time. Use this for any questions about the current time, date, or day of the week.",
+    "description": "Returns the current date and time for a specific location. Use for any questions about time.",
     "inputSchema": {
         "type": "object",
         "properties": {
-            "timezone": {
-                "title": "Timezone",
-                "description": "The IANA timezone name for accurate time reporting (e.g., 'Europe/Paris', 'America/New_York').",
-                "type": "string",
-                "default": "UTC"
-            },
-            "format": {
-                "title": "Output Format",
-                "description": "The Python 'strftime' format for the returned date and time string.",
-                "type": "string",
-                "default": "%A, %Y-%m-%d %H:%M:%S %Z%z"
+            "location": {
+                "title": "Location",
+                "description": "The city or region for which to get the time (e.g., 'Paris', 'Montreal').",
+                "type": "string"
             }
-        }
+        },
+        "required": [] # Le paramètre reste optionnel, la logique interne gérera les cas par défaut.
     }
 }
 AVAILABLE_TOOLS = [GET_CURRENT_TIME_TOOL]
 
-# REMOVED: The separate CONFIGURATION_SCHEMA is no longer needed as its
-# properties have been moved into the tool's inputSchema.
-
-# --- Tool Logic Handlers ---
-# MODIFIED: The handler now reads parameters from 'arguments' instead of 'configuration'.
+# La logique interne gère toujours la conversion de location -> timezone
 async def handle_get_current_time(arguments: Dict, configuration: Dict) -> str:
-    # Get default values from the tool's own inputSchema
-    schema_props = GET_CURRENT_TIME_TOOL["inputSchema"]["properties"]
+    # === MODIFICATION: On cherche "location" au lieu de "timezone" ===
+    location_name = arguments.get("location") if arguments else None
     
-    # Get parameter values from the tool call arguments, falling back to schema defaults
-    tz_name = arguments.get("timezone", schema_props["timezone"]["default"])
-    time_format = arguments.get("format", schema_props["format"]["default"])
+    # Logique de fallback hiérarchique
+    tz_name = "UTC" # Valeur par défaut finale
+    source = "server default"
+
+    if location_name:
+        tz_name = location_name # On utilise la location comme base pour trouver la timezone
+        source = "user request"
+    elif configuration and configuration.get("timezone"):
+        tz_name = configuration["timezone"]
+        source = "user profile"
+    
+    time_format = configuration.get("format", "%H:%M:%S")
 
     try:
-        # Get the timezone object
-        tz = pytz.timezone(tz_name)
+        tz_map = { "montreal": "America/Montreal", "paris": "Europe/Paris", "london": "Europe/London" }
+        tz_name_mapped = tz_map.get(tz_name.lower(), tz_name)
+        tz = pytz.timezone(tz_name_mapped)
     except pytz.UnknownTimeZoneError:
-        # Fallback to UTC if the timezone is invalid
-        tz = pytz.utc
-        tz_name = f"UTC (invalid timezone '{tz_name}' provided)"
+        # On retourne le nom original pour un message d'erreur plus clair
+        return f"I'm sorry, I don't recognize '{tz_name}' as a valid location or timezone."
 
-    # Get the current time and localize it to the target timezone
     now = datetime.now(tz)
     
-    # Format the output string
-    return f"The current time in {tz_name} is: {now.strftime(time_format)}"
-
+    if source == "user request":
+        # On utilise le nom de la timezone résolue pour plus de précision
+        return f"The current time in {tz.zone} is {now.strftime(time_format)}."
+    else:
+        return f"It is currently {now.strftime(time_format)} ({tz.zone})."
 
 TOOL_HANDLERS = { "get_current_time": handle_get_current_time }
 
-
-# --- Main RPC Endpoint ---
 @app.post("/rpc")
 async def rpc_endpoint(request: JsonRpcRequest):
-    # --- Standard MCP Method: tools/list ---
     if request.method == "tools/list":
         return JSONResponse(content={"jsonrpc": "2.0", "id": request.id, "result": {"tools": AVAILABLE_TOOLS}})
-
-    # --- Standard MCP Method: tools/call ---
     elif request.method == "tools/call":
         tool_name = request.params.get("name") if request.params else None
         tool_args = request.params.get("arguments", {}) if request.params else {}
-        
-        # GroBot EXTENSION: Pass the tool-specific configuration to the handler
-        # This is kept for compatibility with the launcher, but will likely be empty for this tool.
         tool_config = request.params.get("configuration", {}) if request.params else {}
-        
         handler = TOOL_HANDLERS.get(tool_name)
-
         if not handler:
             return JSONResponse(
                 content={"jsonrpc": "2.0", "id": request.id, "error": {"code": -32601, "message": f"Method not found: Tool '{tool_name}' is not available."}},
                 status_code=404
             )
         try:
-            # Pass both arguments and configuration to the handler
             result_text = await handler(tool_args, tool_config)
             return JSONResponse(content={"jsonrpc": "2.0", "id": request.id, "result": {"content": [{"type": "text", "text": result_text}]}})
         except Exception as e:
@@ -108,17 +96,12 @@ async def rpc_endpoint(request: JsonRpcRequest):
                 content={"jsonrpc": "2.0", "id": request.id, "error": {"code": -32602, "message": f"Error executing tool '{tool_name}': {e}"}},
                 status_code=500
             )
-            
-    # REMOVED: The custom and now obsolete 'tools/getConfigurationSchema' method has been removed.
-
-    # --- Fallback for unknown methods ---
     else:
         return JSONResponse(
             content={"jsonrpc": "2.0", "id": request.id, "error": {"code": -32601, "message": f"Method not found: '{request.method}'"}},
             status_code=404
         )
 
-# --- Health Check Endpoint ---
 @app.get("/health")
 def health_check():
     return {"status": "ok"}

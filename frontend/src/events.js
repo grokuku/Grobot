@@ -77,13 +77,18 @@ export function handleConnectToLogStream(botId) {
 export async function handleSaveBotSettings(botId, draftBot) {
     ui.showSpinner();
 
+    // ==================== MODIFICATION START ====================
+    // The `personality` field was missing from the data payload.
     const generalData = {
         name: draftBot.name,
         is_active: draftBot.is_active,
         passive_listening_enabled: draftBot.passive_listening_enabled,
         system_prompt: draftBot.system_prompt,
+        personality: draftBot.personality, // This line was missing.
         llm_model: draftBot.llm_model,
     };
+    // ===================== MODIFICATION END =====================
+
     if (draftBot.discord_token && draftBot.discord_token !== '********') {
         generalData.discord_token = draftBot.discord_token;
     }
@@ -123,7 +128,9 @@ export async function handleCreateBot(event) {
         name: form.name.value,
         discord_token: tokenValue ? tokenValue : null,
         llm_model: form.llm_model.value,
-        system_prompt: form.system_prompt.value
+        system_prompt: form.system_prompt.value,
+        // Proactively adding personality to the create function as well
+        personality: form.system_prompt.value // Defaulting to system_prompt for now on creation
     };
 
     try {
@@ -267,8 +274,7 @@ export async function handleDeleteFile(uuid, botId) {
             const eventHandlers = getBotViewEventHandlers();
             await ui.renderTabContent(bot, 'files', handleConnectToLogStream, eventHandlers.saveBotSettings, eventHandlers.fileHandlers, eventHandlers.testChat);
         }
-    } catch (error)
-{
+    } catch (error) {
         ui.showToast(`Error deleting file: ${error.message}`, 'error');
     } finally {
         ui.hideSpinner();

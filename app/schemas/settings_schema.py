@@ -6,9 +6,19 @@ from datetime import datetime
 
 # --- Schéma pour la liste des modèles LLM ---
 class LLMModel(BaseModel):
-    name: str
+    # =================================================================
+    #          *** CORRECTION FINALE DU BUG DE VALIDATION ***
+    # =================================================================
+    # On dit à Pydantic de chercher la valeur dans le champ 'model'
+    # de la source et de l'utiliser pour remplir notre champ 'name'.
+    name: str = Field(..., alias='model')
     modified_at: datetime
     size: int
+
+    # Configuration Pydantic V2 pour permettre le mapping depuis un
+    # objet (from_attributes) et l'utilisation des alias (populate_by_name).
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+    # =================================================================
 
 # --- Schémas pour la gestion des Paramètres Globaux ---
 

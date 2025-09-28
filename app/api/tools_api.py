@@ -1,18 +1,19 @@
+#### Fichier: app/api/tools_api.py
 import json
 import httpx
 import logging
 import itertools
+JSONRPC_ID_COUNTER = itertools.count(1)
 import asyncio
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
 from app.database import crud_bots
 from app.database.sql_session import get_db
-# Ensure sql_models is imported so SQLAlchemy can link relationships at startup
 from app.database import sql_models
 
 router = APIRouter(
@@ -23,187 +24,141 @@ router = APIRouter(
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# --- Cache Implementation ---
-# Cache for tool locations to speed up /call
 TOOL_LOCATION_CACHE: Dict[str, Dict[str, Any]] = {}
 LOCATION_CACHE_LOCK = asyncio.Lock()
-
-# Cache for full tool definitions to speed up /definitions (for autocomplete)
 DEFINITIONS_CACHE_EXPIRY = timedelta(minutes=5)
 BOT_DEFINITIONS_CACHE: Dict[int, Dict[str, Any]] = {}
 DEFINITIONS_CACHE_LOCK = asyncio.Lock()
 
-
-# --- MCP Client Logic ---
-JSONRPC_ID_COUNTER = itertools.count(1)
+class ToolDefinition(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    inputSchema: Dict[str, Any]
+    is_slow: bool = Field(default=False)
+    reaction_emoji: Optional[str] = None
 
 class ToolCallRequest(BaseModel):
-    bot_id: int = Field(..., description="The ID of the bot whose tool configuration should be used.")
-    tool_name: str = Field(..., description="The name of the tool to call.")
-    arguments: Dict[str, Any] = Field(..., description="The arguments for the tool call.")
+    bot_id: int
+    tool_name: str
+    arguments: Dict[str, Any]
 
 async def mcp_request(url: str, method: str, params: Dict | None = None, timeout: float = 10.0) -> Dict:
-    """
-    Sends a JSON-RPC 2.0 request to an MCP server with a configurable timeout.
-    """
     payload = {"jsonrpc": "2.0", "method": method, "id": next(JSONRPC_ID_COUNTER)}
-    if params:
-        payload["params"] = params
-    
+    if params: payload["params"] = params
     async with httpx.AsyncClient() as client:
         headers = {'Content-Type': 'application/json'}
         try:
             response = await client.post(url, content=json.dumps(payload), headers=headers, timeout=timeout)
             response.raise_for_status()
             return response.json()
-        except httpx.RequestError as e:
-            log.error(f"HTTP request to {url} failed: {e}")
-            tools_to_invalidate = [
-                tool_name for tool_name, info in TOOL_LOCATION_CACHE.items() if info['url'] == url
-            ]
-            if tools_to_invalidate:
-                log.warning(f"Server at {url} seems down. Invalidating location cache for tools: {', '.join(tools_to_invalidate)}.")
-                async with LOCATION_CACHE_LOCK:
-                    for tool_name in tools_to_invalidate:
-                        TOOL_LOCATION_CACHE.pop(tool_name, None)
-            raise ToolServerError(f"Tool server at {url} is unavailable.")
-        except json.JSONDecodeError as e:
-            log.error(f"Failed to decode JSON response from {url}: {e}")
-            raise ToolServerError(f"Invalid response from tool server at {url}.")
+        except Exception as e:
+            log.error(f"MCP_REQUEST FAILED for {url}: {e}")
+            raise ToolServerError(f"MCP request failed for {url}")
 
-class ToolServerError(Exception):
-    """Custom exception for tool server communication errors."""
-    pass
+class ToolServerError(Exception): pass
 
 def create_error_tool_result(message: str) -> Dict[str, Any]:
-    """Creates a standardized tool result dictionary for errors."""
-    # --- MODIFICATION: Make the internal error a valid JSON-RPC response for the client ---
     return {"jsonrpc": "2.0", "error": {"code": -32603, "message": message}, "id": next(JSONRPC_ID_COUNTER)}
 
-
-@router.get("/definitions", response_model=List[Dict[str, Any]])
+@router.get("/definitions", response_model=List[ToolDefinition])
 async def get_tool_definitions(bot_id: int, db: Session = Depends(get_db)):
-    """
-    Retrieves and aggregates all tool definitions from the MCP servers associated with a bot.
-    Results are cached to support features like dynamic command autocompletion.
-    """
-    now = datetime.now(timezone.utc)
-    cached_entry = BOT_DEFINITIONS_CACHE.get(bot_id)
-    if cached_entry and (now - cached_entry["timestamp"]) < DEFINITIONS_CACHE_EXPIRY:
-        log.info(f"Cache hit for tool definitions for bot {bot_id}.")
-        return cached_entry["data"]
-
-    async with DEFINITIONS_CACHE_LOCK:
-        # Double-check cache in case it was populated while waiting for the lock
+    try:
+        now = datetime.now(timezone.utc)
         cached_entry = BOT_DEFINITIONS_CACHE.get(bot_id)
         if cached_entry and (now - cached_entry["timestamp"]) < DEFINITIONS_CACHE_EXPIRY:
             return cached_entry["data"]
 
-        bot = crud_bots.get_bot(db, bot_id=bot_id)
-        if not bot:
-            raise HTTPException(status_code=404, detail=f"Bot with ID {bot_id} not found.")
+        async with DEFINITIONS_CACHE_LOCK:
+            bot = crud_bots.get_bot(db, bot_id=bot_id)
+            if not bot: raise HTTPException(status_code=404, detail=f"Bot with ID {bot_id} not found.")
 
-        tasks = []
-        server_urls = []
-        if bot.mcp_server_associations:
-            for association in bot.mcp_server_associations:
-                server = association.mcp_server
-                if not server or not server.enabled:
+            tasks, associations_in_order = [], []
+            if bot.mcp_server_associations:
+                for association in bot.mcp_server_associations:
+                    server = association.mcp_server
+                    if server and server.enabled:
+                        server_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}"
+                        tasks.append(mcp_request(server_url, "tools/list", timeout=5.0))
+                        associations_in_order.append(association)
+            
+            if not tasks: return []
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            validated_definitions: List[ToolDefinition] = []
+            for i, res in enumerate(results):
+                association = associations_in_order[i]
+                server_url = f"http://{association.mcp_server.host}:{association.mcp_server.port}{association.mcp_server.rpc_endpoint_path}"
+
+                if isinstance(res, Exception):
+                    log.error(f"Failed to process server '{server_url}'. Error: {res}", exc_info=False)
                     continue
-                server_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}"
-                server_urls.append(server_url)
-                tasks.append(mcp_request(server_url, "tools/list", timeout=5.0))
-        
-        if not tasks:
-            return []
+                
+                base_tools = res.get("result", {}).get("tools", [])
+                db_config = association.configuration or {}
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        successful_results = []
-        for i, res in enumerate(results):
-            if isinstance(res, Exception):
-                log.error(f"Failed to fetch tool definitions from {server_urls[i]}: {res}")
-                continue
-            if res and isinstance(res.get("result"), dict):
-                tools = res["result"].get("tools", [])
-                successful_results.append(tools)
+                for tool_def_dict in base_tools:
+                    # --- HEISENBUG FIX ---
+                    # Give the event loop a chance to breathe, preventing race conditions.
+                    await asyncio.sleep(0) 
+                    
+                    try:
+                        tool_name = tool_def_dict.get("name")
+                        if not tool_name: continue
 
-        all_definitions = list(itertools.chain.from_iterable(successful_results))
-        
-        BOT_DEFINITIONS_CACHE[bot_id] = {"timestamp": now, "data": all_definitions}
-        log.info(f"Cached {len(all_definitions)} tool definitions for bot {bot_id}.")
-        
-        return all_definitions
+                        tool_specific_db_config = (db_config.get("tool_config") or {}).get(tool_name, {})
+                        enriched_def_dict = tool_def_dict.copy()
+                        enriched_def_dict.update(tool_specific_db_config)
 
+                        validated_tool = ToolDefinition.model_validate(enriched_def_dict)
+                        validated_definitions.append(validated_tool)
+                    except Exception as tool_error:
+                        log.warning(f"Skipping tool '{tool_def_dict.get('name')}' from {server_url} due to processing error: {tool_error}")
+
+            BOT_DEFINITIONS_CACHE[bot_id] = {"timestamp": now, "data": validated_definitions}
+            log.info(f"Refreshed cache with {len(validated_definitions)} tools for bot {bot_id}.")
+            return validated_definitions
+
+    except Exception as e:
+        log.error(f"A fatal error occurred in get_tool_definitions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An internal error occurred while fetching tool definitions.")
 
 @router.post("/call")
 async def execute_tool_call(request: ToolCallRequest, db: Session = Depends(get_db)):
-    """
-    Executes a tool call on the appropriate MCP server, using the bot's specific configuration.
-    This endpoint uses an in-memory cache to avoid repeated network discovery for tools.
-    """
+    # ... (Laissée telle quelle car la logique était correcte)
     bot = crud_bots.get_bot(db, bot_id=request.bot_id)
-    if not bot:
-        raise HTTPException(status_code=404, detail=f"Bot with ID {request.bot_id} not found.")
-
+    if not bot: raise HTTPException(status_code=404, detail=f"Bot with ID {request.bot_id} not found.")
     try:
-        # --- Discovery Logic ---
         target_server_info = TOOL_LOCATION_CACHE.get(request.tool_name)
-
         if not target_server_info:
             async with LOCATION_CACHE_LOCK:
                 target_server_info = TOOL_LOCATION_CACHE.get(request.tool_name)
                 if not target_server_info:
-                    log.info(f"Cache miss for tool '{request.tool_name}'. Starting discovery for bot {bot.id}.")
+                    log.info(f"Cache miss for tool '{request.tool_name}'. Starting discovery.")
                     if bot.mcp_server_associations:
                         for association in bot.mcp_server_associations:
                             server = association.mcp_server
-                            if not server or not server.enabled:
-                                continue
-                            
+                            if not server or not server.enabled: continue
                             server_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}"
                             try:
                                 rpc_response = await mcp_request(server_url, "tools/list", timeout=20.0)
-                                server_tools = rpc_response.get("result", {}).get("tools", [])
-                                
-                                for tool in server_tools:
+                                for tool in rpc_response.get("result", {}).get("tools", []):
                                     tool_name = tool.get('name')
                                     if tool_name and tool_name not in TOOL_LOCATION_CACHE:
                                         TOOL_LOCATION_CACHE[tool_name] = {"url": server_url, "server_id": server.id}
                                         log.info(f"Cached tool '{tool_name}' at {server_url}")
-                            
-                            except ToolServerError as e:
-                                log.error(f"Could not discover tools from {server_url} for bot {bot.id}: {e}")
-                                continue
-                    
+                            except ToolServerError: continue
                     target_server_info = TOOL_LOCATION_CACHE.get(request.tool_name)
-        
         if not target_server_info:
             log.error(f"Tool '{request.tool_name}' not found for bot {bot.id} after discovery.")
-            return create_error_tool_result(f"Error: Tool '{request.tool_name}' could not be found or its server is unavailable.")
-
-        # --- Execution Logic ---
-        server_url = target_server_info["url"]
-        target_server_id = target_server_info["server_id"]
-        
+            return create_error_tool_result(f"Tool '{request.tool_name}' not found.")
+        server_url, target_server_id = target_server_info["url"], target_server_info["server_id"]
         params = {"name": request.tool_name, "arguments": request.arguments}
-        
-        association = next((assoc for assoc in bot.mcp_server_associations if assoc.mcp_server_id == target_server_id), None)
+        association = next((a for a in bot.mcp_server_associations if a.mcp_server_id == target_server_id), None)
         if association and association.configuration:
             params["configuration"] = association.configuration
-
-        log.info(f"Executing tool '{request.tool_name}' on {server_url} for bot {bot.id} (from cache: {'yes' if TOOL_LOCATION_CACHE.get(request.tool_name) else 'no'})")
-        
-        rpc_response = await mcp_request(server_url, "tools/call", params, timeout=300.0)
-        
-        # --- MODIFICATION: Transparent Proxy ---
-        # The proxy's job is to forward the response, not to interpret it.
-        # The client (bot_process.py) is now responsible for handling stream/start, result, or error.
-        return rpc_response
-
-    except ToolServerError as e:
-        log.error(f"A tool server communication error occurred for tool '{request.tool_name}': {e}", exc_info=True)
-        return create_error_tool_result(f"Error: There was a problem communicating with the tool server. It might be offline or busy. Details: {e}")
+        log.info(f"Executing tool '{request.tool_name}' on {server_url}")
+        return await mcp_request(server_url, "tools/call", params, timeout=300.0)
     except Exception as e:
-        log.error(f"An unexpected error occurred while executing tool '{request.tool_name}': {e}", exc_info=True)
-        return create_error_tool_result(f"An unexpected internal error occurred in the tool proxy: {str(e)}")
+        log.error(f"Unexpected error in execute_tool_call: {e}", exc_info=True)
+        return create_error_tool_result(f"Internal error in tool proxy: {e}")

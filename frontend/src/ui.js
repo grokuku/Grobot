@@ -332,16 +332,30 @@ function renderBotSettingsLlmTab(bot, draftBot, container) {
     document.getElementById('refresh-models-btn-bot').addEventListener('click', () => populateModelDropdown('bot-llm-model', document.getElementById('bot-llm-model').value, window.availableModels, true, null));
 }
 
+// ==================== MODIFICATION START ====================
+// The function was incorrectly editing `system_prompt`. This version corrects the wiring
+// and exposes both `personality` and `system_prompt` to avoid ambiguity.
 function renderBotSettingsPersonalityTab(bot, draftBot, container) {
     container.innerHTML = `
-            <fieldset>
-            <legend>Personality and Behavior</legend>
-            <label for="system-prompt">Main System Prompt</label>
-            <textarea id="system-prompt" name="system_prompt" rows="12">${bot.system_prompt || ''}</textarea>
+        <fieldset>
+            <legend>Personality</legend>
+            <label for="bot-personality">Core Personality Prompt</label>
+            <p class="form-help">This is the main personality definition for the bot. It's the first instruction given to the final LLM agent.</p>
+            <textarea id="bot-personality" name="personality" rows="12">${bot.personality || ''}</textarea>
+        </fieldset>
+        <fieldset style="margin-top: 1.5rem;">
+            <legend>System Prompt (Legacy)</legend>
+            <label for="bot-system-prompt">Main System Prompt</label>
+            <p class="form-help">Legacy system prompt, mainly used for older agent architectures. Its usage may be phased out.</p>
+            <textarea id="bot-system-prompt" name="system_prompt" rows="8">${bot.system_prompt || ''}</textarea>
         </fieldset>
     `;
-    container.querySelector('#system-prompt').addEventListener('input', (e) => draftBot.system_prompt = e.target.value);
+    // Correctly wire the 'personality' textarea
+    container.querySelector('#bot-personality').addEventListener('input', (e) => draftBot.personality = e.target.value);
+    // Correctly wire the 'system_prompt' textarea
+    container.querySelector('#bot-system-prompt').addEventListener('input', (e) => draftBot.system_prompt = e.target.value);
 }
+// ===================== MODIFICATION END =====================
 
 async function renderBotSettingsToolsTab(bot, draftBot, container, saveHandler) {
     container.innerHTML = '<p>Loading tool servers...</p>';

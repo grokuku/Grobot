@@ -1,4 +1,4 @@
-# Fichier: app/database/sql_models.py
+#### Fichier: app/database/sql_models.py
 from sqlalchemy import (
     Column, Integer, String, JSON, DateTime, ForeignKey, Text, Boolean,
     BigInteger, UniqueConstraint, CheckConstraint
@@ -83,6 +83,9 @@ class Bot(Base):
     gatekeeper_history_limit = Column(Integer, nullable=False, server_default='5')
     conversation_history_limit = Column(Integer, nullable=False, server_default='15')
     system_prompt = Column(Text, default="You are a helpful AI assistant.", nullable=False)
+    
+    # --- NOUVEAU CHAMP AJOUTÉ ---
+    personality = Column(Text, default="You are a helpful AI assistant.", nullable=False)
 
     llm_provider = Column(String, default="ollama")
     llm_model = Column(String, nullable=True)

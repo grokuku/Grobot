@@ -8,7 +8,8 @@ import httpx
 import json
 
 # --- Constants ---
-API_BASE_URL = "http://app/api"
+# --- MODIFICATION: L'API Base URL est maintenant une constante utilisée à plusieurs endroits ---
+API_BASE_URL = "http://app:8000/api"
 REFRESH_INTERVAL = 15
 API_STARTUP_RETRY_DELAY = 5
 API_STARTUP_MAX_RETRIES = 12 # Total wait time: 12 * 5s = 60s
@@ -67,21 +68,23 @@ def get_bot_config(bot_id: int):
 def start_bot_process(bot_config: dict):
     """Starts a new bot process using its full configuration object."""
     bot_id = bot_config['id']
+    token = bot_config.get("discord_token")
+
     if bot_id in running_bots:
         return
     
     print(f"[Launcher] Démarrage du bot avec l'ID: {bot_id}...")
     
-    gatekeeper_limit = bot_config.get('gatekeeper_history_limit', 5)
-    conversation_limit = bot_config.get('conversation_history_limit', 15)
-
+    # --- MODIFICATION: Construire la nouvelle commande avec les arguments requis ---
     command = [
         sys.executable,
         "-u",
         "bot_process.py",
+        "--token", str(token),
         "--bot-id", str(bot_id),
-        "--gatekeeper-history-limit", str(gatekeeper_limit),
-        "--conversation-history-limit", str(conversation_limit)
+        # Nous utilisons la constante API_BASE_URL définie au début du fichier.
+        # Le client API s'attend à l'URL sans le /api, car il l'ajoute lui-même.
+        "--api-base-url", "http://app:8000"
     ]
     
     process = subprocess.Popen(command, stdout=sys.stdout, stderr=sys.stderr)
@@ -117,8 +120,6 @@ def main_loop():
                     config = get_bot_config(bot_id)
                     token = config.get("discord_token") if config else None
 
-                    # A bot should only start if its config was fetched, it has a token,
-                    # and the token is not a placeholder for pre-configuration.
                     if token and not token.startswith("PLACEHOLDER_TOKEN_"):
                         start_bot_process(config)
                     else:
@@ -141,14 +142,18 @@ def main_loop():
 def wait_for_api():
     """Waits for the API to be available before starting the main loop."""
     print("[Launcher] En attente de l'API...")
+    # --- MODIFICATION: L'endpoint /health n'existe plus, on utilise un endpoint API connu ---
+    health_check_url = f"{API_BASE_URL.rstrip('/')}/bots/"
     for i in range(API_STARTUP_MAX_RETRIES):
         try:
-            response = httpx.get(f"http://app/health", timeout=5.0)
+            # Utiliser un client temporaire pour le health check
+            with httpx.Client() as client:
+                response = client.get(health_check_url, timeout=5.0)
             if response.status_code == 200:
                 print("[Launcher] API est disponible. Démarrage.")
                 return True
         except httpx.RequestError:
-            pass # Ignore connection errors during startup
+            pass 
         
         print(f"[Launcher] API non disponible, nouvelle tentative dans {API_STARTUP_RETRY_DELAY}s... ({i+1}/{API_STARTUP_MAX_RETRIES})")
         time.sleep(API_STARTUP_RETRY_DELAY)

@@ -31,6 +31,8 @@ class BotCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=50, description="Unique name of the bot.")
     discord_token: Optional[str] = Field(None, min_length=10, description="Discord token for the bot. Optional.")
     system_prompt: Optional[str] = ""
+    # === AJOUT ===
+    personality: Optional[str] = ""
     llm_model: Optional[str] = None
     passive_listening_enabled: Optional[bool] = False
     gatekeeper_history_limit: Optional[int] = Field(5, gt=0, description="Number of past messages to provide to the Gatekeeper.")
@@ -39,6 +41,8 @@ class BotCreate(BaseModel):
 class BotUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=50)
     system_prompt: Optional[str] = Field(None)
+    # === AJOUT ===
+    personality: Optional[str] = Field(None)
     discord_token: Optional[str] = Field(None, min_length=10)
     is_active: Optional[bool] = None
     passive_listening_enabled: Optional[bool] = None
@@ -66,6 +70,8 @@ class Bot(BaseModel):
     gatekeeper_history_limit: int
     conversation_history_limit: int
     system_prompt: str
+    # === AJOUT ===
+    personality: str
     llm_provider: str
     llm_model: Optional[str] = None
 

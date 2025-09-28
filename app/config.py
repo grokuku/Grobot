@@ -1,5 +1,4 @@
-# app/config.py
-
+#### Fichier : app/config.py
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -20,6 +19,10 @@ class Settings(BaseSettings):
     # Paramètres de la base de données ChromaDB
     CHROMA_HOST: str = "chromadb" # Nom du service dans docker-compose
     CHROMA_PORT: int = 8000
+
+    # --- NOUVEAU PARAMÈTRE AJOUTÉ ---
+    # Paramètres pour Redis (utilisé pour Celery et le cache de session de chat)
+    REDIS_URL: str = "redis://redis:6379/0"
 
     @property
     def database_url(self) -> str:

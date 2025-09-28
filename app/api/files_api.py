@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 
 from app.database import crud_files, sql_session, crud_settings
 from app.schemas import file_schemas
-from app.core.llm.ollama_client import OllamaClient
+# --- MODIFICATION 1: Remplacer l'ancien import par le nouveau module ---
+from app.core.llm import ollama_client
 
 # Define the base path for storing uploaded files, as mounted in docker-compose.yml
 FILES_STORAGE_PATH = Path("/app/files")
@@ -89,13 +90,12 @@ def get_file_details_for_bot(
     if not db_file:
         raise HTTPException(status_code=404, detail=f"File with UUID {uuid} not found for this bot.")
     
-    # Map the ORM model to the Pydantic schema, including our future-proof field
     return file_schemas.FileDetails(
         uuid=db_file.uuid,
         filename=db_file.filename,
         file_type=db_file.file_type,
         size_bytes=db_file.file_size_bytes,
-        analysis_content=db_file.description # Map DB description to analysis_content
+        analysis_content=db_file.description
     )
 
 @bot_router.delete("/{uuid}/bot/{bot_id}", response_model=file_schemas.File)
@@ -113,7 +113,6 @@ def delete_file_for_bot(
 
     crud_files.delete_file_record_and_storage(db=db, db_file=db_file)
     
-    # The file object still exists in memory after deletion, so we can return it.
     return db_file
 
 
@@ -129,40 +128,31 @@ async def upload_file(
     """
     Uploads a file, saves it to persistent storage, and creates a record in the database.
     """
-    # 1. Generate unique identifiers and paths
     file_uuid = str(uuid.uuid4())
     bot_storage_path = FILES_STORAGE_PATH / str(bot_id)
-    # Ensure the bot-specific directory exists
     bot_storage_path.mkdir(parents=True, exist_ok=True)
     
-    # Use a generic filename for storage to avoid path issues with special characters
     storage_filename = f"{file_uuid}.dat"
     file_location = bot_storage_path / storage_filename
 
-    # 2. Analyze the file content
     try:
-        # Read a chunk to determine file type without loading the whole file in memory
-        file_content_chunk = await file.read(2048)  # Read 2KB
-        await file.seek(0) # IMPORTANT: Reset file pointer to the beginning for saving
+        file_content_chunk = await file.read(2048)
+        await file.seek(0)
 
         mime_type = magic.from_buffer(file_content_chunk, mime=True)
         file_family = get_file_family(mime_type)
         file_size = file.size
         file_metadata = {}
 
-        # 3. Extract specific metadata if applicable
         if file_family == 'image':
             try:
-                # Use Pillow to get image dimensions, requires seeking
                 img = Image.open(file.file)
                 file_metadata['width'] = img.width
                 file_metadata['height'] = img.height
-                await file.seek(0) # Reset again after PIL reads it
+                await file.seek(0)
             except Exception as e:
-                # Not a critical error, just log it and continue
                 print(f"Could not extract image metadata for {file.filename}: {e}")
 
-        # 4. Save the file to disk
         with open(file_location, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
@@ -174,7 +164,6 @@ async def upload_file(
     finally:
         await file.close()
 
-    # 5. Create the database record
     file_create_schema = file_schemas.FileCreate(
         uuid=file_uuid,
         bot_id=bot_id,
@@ -200,8 +189,6 @@ async def describe_image(
 ):
     """
     Generates a description for an image file using a multimodal LLM.
-    - Caches results: returns existing description if available.
-    - Enforces access control: user must own the file or it must be public.
     """
     db_file = crud_files.get_accessible_file_by_uuid(db, uuid, requester_discord_id)
 
@@ -211,7 +198,6 @@ async def describe_image(
     if db_file.file_family != 'image':
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This operation is only supported for image files.")
 
-    # Return cached description if it already exists
     if db_file.description:
         return file_schemas.FileDescriptionResponse(
             uuid=db_file.uuid,
@@ -219,48 +205,38 @@ async def describe_image(
             is_from_cache=True
         )
 
-    # Get multimodal model configuration
+    # --- MODIFICATION 2: Utiliser le nouveau client LLM partagé ---
+    # On vérifie si le client a bien été initialisé au démarrage de l'app
+    client = ollama_client.llm_manager.get("client")
+    if not client:
+        raise HTTPException(status_code=503, detail="Ollama client is not initialized. Please configure the Ollama host in the global settings.")
+    
     settings = crud_settings.get_global_settings(db)
     if not settings or not settings.multimodal_llm_model:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Multimodal LLM model is not configured.")
 
-    # Read and encode image
     try:
         with open(db_file.storage_path, "rb") as image_file:
             encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not read image file: {e}")
 
-    # Call Ollama
-    ollama_client = OllamaClient(host_url=str(settings.ollama_host_url))
-    messages = [{"role": "user", "content": "Describe this image in detail."}]
+    messages = [{"role": "user", "content": "Describe this image in detail.", "images": [encoded_image]}]
     
     try:
-        full_description = ""
-        # We must consume the async generator to get the full response
-        async for chunk in ollama_client.chat_streaming_response(
+        # Remplacement de la boucle de streaming par un appel direct et simple
+        response = await client.chat(
             model=str(settings.multimodal_llm_model),
-            messages=messages,
-            images_base64=[encoded_image]
-        ):
-            try:
-                data = json.loads(chunk)
-                if data.get("error"):
-                    raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Ollama error: {data['error']}")
-                if "message" in data and "content" in data["message"]:
-                    full_description += data["message"]["content"]
-            except (json.JSONDecodeError, KeyError):
-                continue
+            messages=messages
+        )
+        full_description = response.get('message', {}).get('content', '').strip()
 
         if not full_description:
-             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="LLM returned an empty description.")
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="LLM returned an empty description.")
 
-    except HTTPException:
-        raise # Re-raise HTTP exceptions from the stream
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred with the LLM call: {e}")
 
-    # Save and return the new description
     updated_file = crud_files.update_file_description(db, db_file, full_description)
 
     return file_schemas.FileDescriptionResponse(
@@ -279,22 +255,27 @@ def analyze_file(
 ):
     """
     Triggers a background task to analyze a file's content and generate a description.
-    Access is restricted to the file owner.
     """
     db_file = crud_files.get_file_by_uuid(db, uuid)
 
     if not db_file:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
 
-    # Access control: Only the owner can request an analysis.
-    # We consider an admin interface would use a different mechanism if needed.
     if db_file.owner_discord_id != requester_discord_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to analyze this file.")
 
-    # Add the long-running analysis task to the background
-    background_tasks.add_task(crud_files.analyze_and_update_file_description, db, uuid)
+    # --- MODIFICATION 3: Désactiver temporairement la fonctionnalité ---
+    # La fonction cible dans crud_files a été supprimée. Nous désactivons cet endpoint
+    # en attendant de réimplémenter la logique dans un module `file_analyzer`.
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="File analysis is temporarily disabled during application refactoring."
+    )
 
-    return {"message": "File analysis has been scheduled."}
+    # L'ancienne ligne, conservée pour référence :
+    # background_tasks.add_task(crud_files.analyze_and_update_file_description, db, uuid)
+
+    # return {"message": "File analysis has been scheduled."}
 
 
 @router.get("/search/bot/{bot_id}", response_model=List[file_schemas.File])
@@ -309,7 +290,6 @@ def search_bot_files(
 ):
     """
     Searches for files associated with a specific bot, with access control.
-    Returns only public files or files owned by the requester.
     """
     files = crud_files.search_files(
         db=db,
@@ -349,5 +329,4 @@ def delete_file(uuid: str, db: Session = Depends(sql_session.get_db)):
         )
     return deleted_file
 
-# Finally, include the bot-specific router into the main one
 router.include_router(bot_router)

@@ -1,126 +1,122 @@
-# app/schemas/chat_schemas.py
-
+"""
+Pydantic schemas for chat interactions, supporting the new agent chain architecture.
+"""
 from pydantic import BaseModel, Field
-from typing import List, Optional, Any
+from typing import List, Dict, Any, Optional, Literal
+
+# region: API Request Schemas
+# ==============================================================================
 
 class ChatMessage(BaseModel):
-    """
-    Schema for a single message in a conversation history.
-    """
-    role: str = Field(..., description="The role of the message author (e.g., 'user', 'assistant', 'system', 'tool').")
-    content: str = Field(..., description="The text content of the message.")
-    tool_calls: Optional[List[Any]] = Field(None, description="A list of tool calls requested by the model.")
+    """Represents a single message in the conversation history."""
+    role: str  # e.g., "user", "assistant", "tool"
+    content: str
 
-class AttachedFile(BaseModel):
-    """
-    Schema for essential metadata of a file attached to a chat request.
-    """
-    uuid: str = Field(..., description="The unique UUID of the uploaded file.")
-    filename: str = Field(..., description="The original filename of the uploaded file.")
-    file_family: str = Field(..., description="The high-level family of the file (e.g., 'image', 'text').")
+class ProcessMessageRequest(BaseModel):
+    """Request body for the main chat processing endpoint."""
+    bot_id: int
+    user_id: str  # Discord user ID
+    user_display_name: str
+    channel_id: str
+    message_id: str
+    message_content: str
+    history: List[ChatMessage]
+    is_direct_message: bool = False
+    is_direct_mention: bool = False # NEW: Flag to indicate a direct mention or reply
 
-# --- NOUVEAU: Schémas pour le Contexte Discord ---
+# endregion
 
-class UserContext(BaseModel):
-    """
-    Represents the Discord user who sent the message.
-    """
-    discord_id: int
-    name: str
-    display_name: str
+# region: Agent & Plan Schemas
+# ==============================================================================
 
-class ChannelContext(BaseModel):
-    """
-    Represents the Discord context (channel, server) where the message was sent.
-    """
-    context_type: str = Field(..., description="Type of context, e.g., 'DIRECT_MESSAGE' or 'SERVER_CHANNEL'.")
-    server_id: Optional[int] = None
-    server_name: Optional[str] = None
-    channel_id: int
-    channel_name: Optional[str] = None
+class GatekeeperDecision(BaseModel):
+    """Schema for the Gatekeeper's output."""
+    reason: str
+    should_respond: bool = False
 
+class RequiredTool(BaseModel):
+    """Schema for a single required tool."""
+    tool_name: str
+    arguments: Dict[str, Any]
 
-# --- Schéma de Requête Principal ---
+class ToolIdentifierResult(BaseModel):
+    """Schema for the Tool Identifier's output."""
+    required_tools: List[str] = []
 
-class ChatRequest(BaseModel):
-    """
-    Schema for an incoming streaming chat request, used by the main bot process.
-    Contains a message history and can include a system prompt and tools.
-    """
-    bot_id: int = Field(..., description="The unique numeric ID of the bot processing the request.")
-    messages: List[ChatMessage] = Field(..., description="The list of messages constituting the conversation history.")
+class MissingParameter(BaseModel):
+    """Schema for a single missing parameter."""
+    tool: str
+    parameter: str
 
-    # --- NOUVEAU: Champs de contexte ajoutés ---
-    user_context: Optional[UserContext] = Field(None, description="Information about the user who sent the message.")
-    channel_context: Optional[ChannelContext] = Field(None, description="Information about the channel/server where the message was sent.")
-    channel_history: Optional[List[str]] = Field(None, description="The recent message history from the Discord channel.")
-    # ----------------------------------------
+class ParameterExtractorResult(BaseModel):
+    """Schema for the Parameter Extractor's output."""
+    extracted_parameters: Dict[str, Dict[str, Any]] = {}
+    missing_parameters: List[MissingParameter] = []
+    clarification_question: Optional[str] = None
 
-    system: Optional[str] = Field(None, description="The complete system prompt to use for this specific interaction.")
-    tools: Optional[List[Any]] = Field(None, description="A list of tools the model can use, in the format expected by the provider (e.g., Ollama).")
-    attached_files: Optional[List[AttachedFile]] = Field(None, description="A list of files attached to the user's message.")
-    contextual_image_url: Optional[str] = Field(None, description="An image URL found in the immediate context of the user's message.")
+class PlanStep(BaseModel):
+    """A single step in an execution plan."""
+    step: int
+    tool_name: str
+    arguments: Dict[str, Any]
 
-# --- NOUVEAU: Schéma de Requête pour le Synthétiseur ---
-class SynthesizeRequest(BaseModel):
-    """
-    Schema for an incoming synthesis request. It is a subset of ChatRequest,
-    specifically excluding the 'tools' field to prevent the synthesizer from
-    being able to call them.
-    """
-    bot_id: int = Field(..., description="The unique numeric ID of the bot processing the request.")
-    messages: List[ChatMessage] = Field(..., description="The list of messages constituting the conversation history.")
-    user_context: Optional[UserContext] = Field(None, description="Information about the user who sent the message.")
-    channel_context: Optional[ChannelContext] = Field(None, description="Information about the channel/server where the message was sent.")
-    channel_history: Optional[List[str]] = Field(None, description="The recent message history from the Discord channel.")
-    system: Optional[str] = Field(None, description="The complete system prompt to use for this specific interaction.")
-    attached_files: Optional[List[AttachedFile]] = Field(None, description="A list of files attached to the user's message.")
+class PlannerResult(BaseModel):
+    """Schema for the Planner's output."""
+    plan: List[PlanStep] = []
 
+# endregion
 
-class ChatResponse(BaseModel):
-    """
-    Schema for the API's response to a streaming chat request.
-    This is not currently used to send a final response body, as the response is a stream.
-    """
-    response_content: str = Field(..., description="The text content of the response to be posted.")
+# region: API Response Schemas
+# ==============================================================================
 
-# --- NOUVEAU: Schéma pour l'Archiviste ---
+class BaseChatResponse(BaseModel):
+    """Base schema for all actions returned by the chat processing endpoint."""
+    action: str
+    
+class StopResponse(BaseChatResponse):
+    """Action to tell the client to stop processing."""
+    action: Literal["STOP"] = "STOP"
+    reason: str
 
-class ArchivistRequest(BaseModel):
-    """
-    Schema for a request to the archivist service.
-    """
-    chat_context: ChatRequest = Field(..., description="The original chat request context, including history and user info.")
-    final_bot_response: str = Field(..., description="The final, complete text response generated by the Synthesizer.")
+class ClarifyResponse(BaseChatResponse):
+    """Action to ask the user for more information."""
+    action: Literal["CLARIFY"] = "CLARIFY"
+    message: str
 
-# --- NOUVEAU: Schémas pour l'Acknowledge-Synthesizer ---
+class AcknowledgeAndExecuteResponse(BaseChatResponse):
+    """
+    Action to send an acknowledgement message and then execute a plan.
+    The plan is now passed along with this response object to be saved in Redis.
+    """
+    action: Literal["ACKNOWLEDGE_AND_EXECUTE"] = "ACKNOWLEDGE_AND_EXECUTE"
+    acknowledgement_message: str
+    final_response_stream_url: str # URL the client will connect to for the final answer
+    
+    # === MODIFICATION START: Add fields to carry the execution context ===
+    plan: Optional[PlannerResult] = None
+    tool_definitions: List[Dict[str, Any]] = []
+    # === MODIFICATION END ===
 
-class AcknowledgeRequest(BaseModel):
-    """
-    Schema for a request to the Acknowledge-Synthesizer.
-    """
-    bot_id: int = Field(..., description="The ID of the bot that needs to generate the message.")
-    user_context: UserContext = Field(..., description="Context about the user to address.")
-    tool_name: str = Field(..., description="The name of the slow tool that is about to be executed.")
+class SynthesizeResponse(BaseChatResponse):
+    """Action to stream the final response directly."""
+    action: Literal["SYNTHESIZE"] = "SYNTHESIZE"
+    final_response_stream_url: str
 
-class AcknowledgeResponse(BaseModel):
-    """
-    Schema for the response from the Acknowledge-Synthesizer.
-    """
-    acknowledgement_message: str = Field(..., description="The generated message to send to the user.")
+# endregion
 
+# region: Archivist Schemas (Kept from previous version)
+# ==============================================================================
+class NoteToCreate(BaseModel):
+    fact: str
+    reliability_score: int = Field(..., ge=1, le=10)
 
-# --- Additions for the Test Chat ---
+class ArchivistDecision(BaseModel):
+    notes_to_create: List[NoteToCreate] = []
 
-class TestChatRequest(BaseModel):
-    """
-    Schema for a simple, stateless request from the UI's test chat.
-    """
-    bot_id: int = Field(..., description="The ID of the bot to which the message is addressed.")
-    user_message: str = Field(..., description="The single message sent by the user from the test interface.")
+class ArchiveRequest(BaseModel):
+    bot_id: int
+    user_id: str
+    user_display_name: str
+    conversation_history: List[ChatMessage]
 
-class TestChatResponse(BaseModel):
-    """
-    Schema for the response to a test chat request.
-    """
-    bot_response: str = Field(..., description="The final, complete text response from the bot.")
+# endregion
