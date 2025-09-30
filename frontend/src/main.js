@@ -26,23 +26,23 @@ async function selectBot(botId, defaultTab = 'test-chat') {
     // Highlight the selected bot in the sidebar
     document.querySelector('.sidebar-bot-item.selected')?.classList.remove('selected');
     document.querySelector(`.sidebar-bot-item[data-bot-id='${botId}']`)?.classList.add('selected');
-    
+
     ui.showSpinner();
     try {
         const bot = await api.fetchBotDetails(botId);
         if (!bot) throw new Error("Bot details not found.");
-        
+
         // The UI rendering functions need callbacks for handling events within them.
         const tabChangeCallback = (bot, tabName) => renderTabContent(bot, tabName);
         const eventHandlers = events.getBotViewEventHandlers();
-        
+
         await ui.renderMainContent(
-            bot, 
-            defaultTab, 
-            tabChangeCallback, 
-            events.handleConnectToLogStream, 
-            eventHandlers.saveBotSettings, 
-            eventHandlers.fileHandlers, 
+            bot,
+            defaultTab,
+            tabChangeCallback,
+            events.handleConnectToLogStream,
+            eventHandlers.saveBotSettings,
+            eventHandlers.fileHandlers,
             eventHandlers.testChat,
             eventHandlers.kbHandlers // MODIFICATION : Ajout des handlers pour la KB
         );
@@ -66,10 +66,10 @@ window.selectBot = selectBot;
 async function renderTabContent(bot, tabName) {
     const eventHandlers = events.getBotViewEventHandlers();
     await ui.renderTabContent(
-        bot, 
-        tabName, 
-        events.handleConnectToLogStream, 
-        eventHandlers.saveBotSettings, 
+        bot,
+        tabName,
+        events.handleConnectToLogStream,
+        eventHandlers.saveBotSettings,
         eventHandlers.fileHandlers,
         eventHandlers.testChat,
         eventHandlers.kbHandlers // MODIFICATION : Ajout des handlers pour la KB
@@ -85,21 +85,28 @@ async function renderTabContent(bot, tabName) {
  */
 async function init() {
     ui.showSpinner();
-    
+
     // 1. Apply theme immediately
     ui.applyTheme(localStorage.getItem('theme') || 'dark', localStorage.getItem('color') || 'blue');
-    
+
     // 2. Fetch initial data
     try {
         const models = await api.fetchModels();
-        window.availableModels.length = 0; // Clear and refill the global array
+        window.availableModels.length = 0;
         Array.prototype.push.apply(window.availableModels, models);
-        
-        // Fetches bots and renders the sidebar
-        await ui.refreshBotsList(window.botsList, selectBot, events.getSidebarEventHandlers()); 
+
+        await ui.refreshBotsList(window.botsList, selectBot);
     } catch (error) {
-        ui.showToast(`Initialization failed: ${error.message}`, 'error');
-        console.error(error);
+        // MODIFIED: If fetching models or bots fails, stop initialization and show a clear error.
+        const mainContent = document.getElementById('main-content');
+        mainContent.innerHTML = `<div class="error-container">
+            <h2>Initialization Failed</h2>
+            <p>Could not connect to the backend or fetch essential data. Please check that all services are running and refresh the page.</p>
+            <pre>${error.message}</pre>
+        </div>`;
+        ui.hideSpinner();
+        console.error("Fatal initialization error:", error);
+        return; // Stop execution
     }
 
     // 3. Routing based on URL hash

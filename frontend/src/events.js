@@ -77,17 +77,16 @@ export function handleConnectToLogStream(botId) {
 export async function handleSaveBotSettings(botId, draftBot) {
     ui.showSpinner();
 
-    // ==================== MODIFICATION START ====================
-    // The `personality` field was missing from the data payload.
     const generalData = {
         name: draftBot.name,
         is_active: draftBot.is_active,
         passive_listening_enabled: draftBot.passive_listening_enabled,
         system_prompt: draftBot.system_prompt,
-        personality: draftBot.personality, // This line was missing.
-        llm_model: draftBot.llm_model,
+        personality: draftBot.personality,
+        decisional_model: draftBot.decisional_model,
+        tool_model: draftBot.tool_model,
+        output_model: draftBot.output_model,
     };
-    // ===================== MODIFICATION END =====================
 
     if (draftBot.discord_token && draftBot.discord_token !== '********') {
         generalData.discord_token = draftBot.discord_token;
@@ -163,14 +162,27 @@ export async function handleSaveGlobalSettings(event) {
     ui.showSpinner();
     const form = event.target;
 
+    // CORRECTED: The keys of this payload now match the aliases expected by the backend API
+    // (e.g., 'default_decisional_llm_model') AND the 'name' attribute of the form's input fields.
     const data = {
-        ollama_host_url: form.ollama_host_url.value,
-        default_llm_model: form.default_llm_model.value,
+        default_decisional_llm_server: form.default_decisional_llm_server.value || null,
+        default_decisional_llm_model: form.default_decisional_llm_model.value || null,
+        default_decisional_llm_context_window: form.default_decisional_llm_context_window.value ? parseInt(form.default_decisional_llm_context_window.value, 10) : null,
+
+        default_tool_llm_server: form.default_tool_llm_server.value || null,
+        default_tool_llm_model: form.default_tool_llm_model.value || null,
+        default_tool_llm_context_window: form.default_tool_llm_context_window.value ? parseInt(form.default_tool_llm_context_window.value, 10) : null,
+
+        default_output_llm_server: form.default_output_llm_server.value || null,
+        default_output_llm_model: form.default_output_llm_model.value || null,
+        default_output_llm_context_window: form.default_output_llm_context_window.value ? parseInt(form.default_output_llm_context_window.value, 10) : null,
+
         tools_system_prompt: form.tools_system_prompt.value,
         context_header_default_prompt: form.context_header_default_prompt.value
     };
 
     try {
+        console.log('>>> [SAVE ATTEMPT] Sending this payload to backend:', JSON.stringify(data, null, 2));
         const updatedSettings = await api.saveGlobalSettings(data);
         ui.showToast('Global settings saved successfully!');
         await ui.renderGlobalSettingsForm(updatedSettings, getGlobalSettingsEventHandlers());
@@ -195,7 +207,6 @@ export async function handleSaveMcpServer(event, serverId = null) {
         description: form.description.value,
         host: form.host.value,
         port: parseInt(form.port.value, 10),
-        // MODIFIÉ : Ajout du nouveau champ
         rpc_endpoint_path: form.rpc_endpoint_path.value,
         enabled: form.enabled.checked
     };
@@ -368,7 +379,6 @@ export async function handleLoadBotKnowledgeBase(botId) {
  * @param {number} botId - The ID of the bot.
  * @param {string} query - The search query (ID or name).
  */
-// MODIFIÉ: La fonction appelle maintenant renderUserList au lieu de la fonction obsolète.
 export async function handleUserSearch(botId, query) {
     ui.showSpinner();
     try {
@@ -382,7 +392,6 @@ export async function handleUserSearch(botId, query) {
     }
 }
 
-// NOUVEAU: Gère l'affichage de la vue détaillée d'un utilisateur.
 /**
  * Fetches a single user's full details and renders the detail view.
  * @param {number} botId - The ID of the bot.
@@ -392,7 +401,7 @@ async function handleShowUserDetails(botId, userId) {
     ui.showSpinner();
     try {
         // The searchUser API is used to get the full profile with notes
-        const userDetailsList = await api.searchUser(botId, userId);
+        const userDetailsList = await api.searchUser(botId, query);
         if (userDetailsList && userDetailsList.length > 0) {
             const userDetail = userDetailsList[0];
             ui.renderUserDetailView(userDetail, getUserKbEventHandlers(botId));
@@ -489,7 +498,6 @@ export function getUserKbEventHandlers(botId) {
         handleUserSearch: (query) => handleUserSearch(botId, query),
         handleSaveUserProfile: handleSaveUserProfile,
         handleDeleteUserNote: handleDeleteUserNote,
-        // CORRIGÉ: Le clic sur un utilisateur appelle maintenant la fonction pour afficher les détails.
         handleUserSelect: (userId) => handleShowUserDetails(botId, userId)
     };
 }

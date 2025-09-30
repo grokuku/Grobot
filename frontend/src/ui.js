@@ -229,29 +229,40 @@ export async function renderTabContent(bot, tabName, logConnectCallback, setting
     }
 }
 
-export function populateModelDropdown(selectId, selectedValue, availableModels, forceRefresh = false, ollamaUrl = null) {
-    const select = document.getElementById(selectId);
-    if (!select) return;
+export function populateModelDropdown(selectTarget, selectedValue, availableModels, forceRefresh = false, ollamaUrl = null) {
+    // Accept either an element ID (string) or an element object.
+    const select = typeof selectTarget === 'string' ? document.getElementById(selectTarget) : selectTarget;
 
-    const populate = () => {
-        select.innerHTML = '';
-        if (availableModels.length === 0) {
-            select.innerHTML = '<option value="">No models found</option>';
+    if (!select) {
+        console.error("populateModelDropdown failed: Target element not found.", { selectTarget });
+        return;
+    }
+
+    const _populateWithOptions = (targetSelect, models, currentSelection) => {
+        const currentId = targetSelect.id;
+        targetSelect.innerHTML = '';
+        if (!models || models.length === 0) {
+            targetSelect.innerHTML = '<option value="">No models found</option>';
         } else {
             const blankOption = document.createElement('option');
             blankOption.value = "";
-            blankOption.textContent = "(Use Global Default)";
-            select.appendChild(blankOption);
+            const isGlobalSettings = currentId && currentId.includes('default');
+            blankOption.textContent = isGlobalSettings ? "(Not Set)" : "(Use Global Default)";
+            targetSelect.appendChild(blankOption);
 
-            availableModels.forEach(model => {
-                const option = document.createElement('option');
-                option.value = model;
-                option.textContent = model;
-                if (model === selectedValue) {
-                    option.selected = true;
+            models.forEach(modelObj => {
+                if (modelObj && typeof modelObj === 'object' && modelObj.model) {
+                    const option = document.createElement('option');
+                    const modelName = modelObj.model;
+                    option.value = modelName;
+                    option.textContent = modelName;
+                    targetSelect.appendChild(option);
                 }
-                select.appendChild(option);
             });
+
+            // After populating all options, set the value of the select element.
+            // This is more robust than setting .selected on individual options.
+            targetSelect.value = currentSelection || "";
         }
     };
 
@@ -259,18 +270,17 @@ export function populateModelDropdown(selectId, selectedValue, availableModels, 
         showSpinner();
         fetchModels(ollamaUrl)
             .then(models => {
-                availableModels.length = 0;
-                Array.prototype.push.apply(availableModels, models);
-                populate();
+                _populateWithOptions(select, models, selectedValue);
                 showToast("LLM models list refreshed.", "success");
             })
             .catch(error => {
                 console.error("Error refreshing models:", error);
                 showToast(error.message, "error");
+                select.innerHTML = `<option value="">Error fetching models</option>`;
             })
             .finally(hideSpinner);
     } else {
-        populate();
+        _populateWithOptions(select, availableModels, selectedValue);
     }
 }
 
@@ -315,26 +325,83 @@ function renderBotSettingsGeneralTab(bot, draftBot, container) {
     container.querySelector('#bot-passive-listening').addEventListener('change', (e) => draftBot.passive_listening_enabled = e.target.checked);
 }
 
-function renderBotSettingsLlmTab(bot, draftBot, container) {
-    container.innerHTML = `
-        <fieldset>
-            <legend>LLM Configuration</legend>
-            <label for="bot-llm-model">LLM Model</label>
-            <p class="form-help">Leave blank to use the global default model.</p>
-            <div class="model-select-container">
-                <select id="bot-llm-model" name="llm_model"></select>
-                <button type="button" id="refresh-models-btn-bot" class="refresh-btn icon-btn">⟳</button>
+function createLlmConfigBlock(
+    category, title, helpText, draftState,
+    serverValue, modelValue, contextValue,
+    fieldIdPrefix = ''
+) {
+    const serverField = `${fieldIdPrefix}${category}_llm_server`;
+    const modelField = `${fieldIdPrefix}${category}_llm_model`;
+    const contextField = `${fieldIdPrefix}${category}_llm_context_window`;
+
+    const fieldset = document.createElement('fieldset');
+    fieldset.innerHTML = `
+        <legend>${title}</legend>
+        <p class="form-help">${helpText}</p>
+        <div class="llm-config-grid">
+            <div>
+                <label for="${serverField}">Server URL</label>
+                <input type="text" id="${serverField}" name="${serverField}" value="${serverValue || ''}" placeholder="e.g., http://host.docker.internal:11434">
             </div>
-        </fieldset>
+            <div>
+                <label for="${modelField}">Model Name</label>
+                <div class="model-select-container">
+                    <select id="${modelField}" name="${modelField}"></select>
+                    <button type="button" id="refresh-${fieldIdPrefix}${category}-models-btn" class="refresh-btn icon-btn">⟳</button>
+                </div>
+            </div>
+            <div>
+                <label for="${contextField}">Context Window</label>
+                <input type="number" id="${contextField}" name="${contextField}" value="${contextValue || ''}" placeholder="e.g., 8192">
+            </div>
+        </div>
     `;
-    populateModelDropdown('bot-llm-model', bot.llm_model, window.availableModels);
-    container.querySelector('#bot-llm-model').addEventListener('change', (e) => draftBot.llm_model = e.target.value);
-    document.getElementById('refresh-models-btn-bot').addEventListener('click', () => populateModelDropdown('bot-llm-model', document.getElementById('bot-llm-model').value, window.availableModels, true, null));
+
+    // Find the select element within the in-memory fieldset.
+    const modelSelectElement = fieldset.querySelector(`#${modelField}`);
+
+    // Attach event listeners to update the draft state for bot settings
+    if (draftState) {
+        fieldset.querySelector(`#${serverField}`).addEventListener('input', (e) => draftState[serverField] = e.target.value);
+        modelSelectElement.addEventListener('change', (e) => draftState[modelField] = e.target.value);
+        fieldset.querySelector(`#${contextField}`).addEventListener('input', (e) => draftState[contextField] = e.target.value ? parseInt(e.target.value, 10) : null);
+    }
+
+    // Event listener for the refresh button is generic
+    fieldset.querySelector(`#refresh-${fieldIdPrefix}${category}-models-btn`).addEventListener('click', () => {
+        const serverUrlInput = fieldset.querySelector(`#${serverField}`);
+        populateModelDropdown(modelSelectElement, modelSelectElement.value, [], true, serverUrlInput.value);
+    });
+
+    // Populate dropdown from global cache, passing the element object directly.
+    populateModelDropdown(modelSelectElement, modelValue, window.availableModels);
+
+    return fieldset;
 }
 
-// ==================== MODIFICATION START ====================
-// The function was incorrectly editing `system_prompt`. This version corrects the wiring
-// and exposes both `personality` and `system_prompt` to avoid ambiguity.
+function renderBotSettingsLlmTab(bot, draftBot, container) {
+    container.innerHTML = ''; // Clear container
+
+    const decisionalBlock = createLlmConfigBlock(
+        'decisional', 'Decisional Model', 'Fast model for simple tasks...', draftBot,
+        bot.decisional_llm_server_url, bot.decisional_llm_model, bot.decisional_llm_context_window
+    );
+
+    const toolBlock = createLlmConfigBlock(
+        'tool', 'Tool-Use Model', 'Model with strong logical reasoning...', draftBot,
+        bot.tools_llm_server_url, bot.tools_llm_model, bot.tools_llm_context_window
+    );
+
+    const outputBlock = createLlmConfigBlock(
+        'output', 'Client-Facing Output Model', 'Powerful, creative model...', draftBot,
+        bot.output_client_llm_server_url, bot.output_client_llm_model, bot.output_client_llm_context_window
+    );
+
+    container.appendChild(decisionalBlock);
+    container.appendChild(toolBlock);
+    container.appendChild(outputBlock);
+}
+
 function renderBotSettingsPersonalityTab(bot, draftBot, container) {
     container.innerHTML = `
         <fieldset>
@@ -350,12 +417,9 @@ function renderBotSettingsPersonalityTab(bot, draftBot, container) {
             <textarea id="bot-system-prompt" name="system_prompt" rows="8">${bot.system_prompt || ''}</textarea>
         </fieldset>
     `;
-    // Correctly wire the 'personality' textarea
     container.querySelector('#bot-personality').addEventListener('input', (e) => draftBot.personality = e.target.value);
-    // Correctly wire the 'system_prompt' textarea
     container.querySelector('#bot-system-prompt').addEventListener('input', (e) => draftBot.system_prompt = e.target.value);
 }
-// ===================== MODIFICATION END =====================
 
 async function renderBotSettingsToolsTab(bot, draftBot, container, saveHandler) {
     container.innerHTML = '<p>Loading tool servers...</p>';
@@ -488,37 +552,60 @@ export async function renderGlobalSettingsForm(settings, eventHandlers) {
     document.querySelectorAll('.sidebar-bot-item.selected')?.forEach(el => el.classList.remove('selected'));
     renderThemeControls();
     const form = document.getElementById('global-settings-form');
-    form.innerHTML = `
-        <fieldset>
-            <legend>LLM Configuration</legend>
-            <label for="ollama-host-url">Ollama Server URL</label>
-            <input type="text" id="ollama-host-url" name="ollama_host_url" value="${settings.ollama_host_url || ''}">
-            <label for="default-llm-model">Default LLM Model</label>
-            <div class="model-select-container">
-                <select id="default-llm-model" name="default_llm_model"></select>
-                <button type="button" id="refresh-models-btn-global" class="refresh-btn icon-btn">⟳</button>
-            </div>
-        </fieldset>
-        <fieldset>
-            <legend>MCP Tool Servers</legend>
-            <div id="mcp-servers-list-container">Loading servers...</div>
-            <button type="button" id="add-mcp-server-btn" class="primary-button" style="margin-top: 1rem;">Register New MCP Server</button>
-        </fieldset>
-        <fieldset>
-            <legend>Default System Prompts</legend>
-            <div class="form-label-group"><label for="context-header-default-prompt">Default Context Prompt</label><button type="button" id="reset-context-prompt-btn" class="secondary-button small-button">Reset</button></div>
-            <textarea id="context-header-default-prompt" name="context_header_default_prompt" rows="6">${settings.context_header_default_prompt || ''}</textarea>
-            <div class="form-label-group" style="margin-top: 1rem;"><label for="tools-system-prompt">Tools System Prompt</label><button type="button" id="reset-tools-prompt-btn" class="secondary-button small-button">Reset</button></div>
-            <p class="form-help">Instructions given to the LLM on how to call tools. Edit with caution.</p>
-            <textarea id="tools-system-prompt" name="tools_system_prompt" rows="8">${settings.tools_system_prompt || ''}</textarea>
-        </fieldset>
+
+    form.innerHTML = ''; // Clear form before appending
+
+    const llmFieldset = document.createElement('fieldset');
+    llmFieldset.innerHTML = `<legend>LLM Configuration</legend>`;
+
+    llmFieldset.appendChild(createLlmConfigBlock(
+        'decisional', 'Default Decisional Model', 'Default for fast, simple tasks.', null,
+        settings.default_decisional_llm_server,
+        settings.default_decisional_llm_model,
+        settings.default_decisional_llm_context_window,
+        'default_'
+    ));
+    llmFieldset.appendChild(createLlmConfigBlock(
+        'tool', 'Default Tool-Use Model', 'Default for logic and structured JSON generation.', null,
+        settings.default_tool_llm_server,
+        settings.default_tool_llm_model,
+        settings.default_tool_llm_context_window,
+        'default_'
+    ));
+    llmFieldset.appendChild(createLlmConfigBlock(
+        'output', 'Default Output Model', 'Default for high-quality, user-facing responses.', null,
+        settings.default_output_llm_server,
+        settings.default_output_llm_model,
+        settings.default_output_llm_context_window,
+        'default_'
+    ));
+    form.appendChild(llmFieldset);
+
+    const mcpFieldset = document.createElement('fieldset');
+    mcpFieldset.innerHTML = `
+        <legend>MCP Tool Servers</legend>
+        <div id="mcp-servers-list-container">Loading servers...</div>
+        <button type="button" id="add-mcp-server-btn" class="primary-button" style="margin-top: 1rem;">Register New MCP Server</button>
     `;
+    form.appendChild(mcpFieldset);
+
+    const promptsFieldset = document.createElement('fieldset');
+    promptsFieldset.innerHTML = `
+        <legend>Default System Prompts</legend>
+        <div class="form-label-group"><label for="context-header-default-prompt">Default Context Prompt</label><button type="button" id="reset-context-prompt-btn" class="secondary-button small-button">Reset</button></div>
+        <textarea id="context-header-default-prompt" name="context_header_default_prompt" rows="6">${settings.context_header_default_prompt || ''}</textarea>
+        <div class="form-label-group" style="margin-top: 1rem;"><label for="tools-system-prompt">Tools System Prompt</label><button type="button" id="reset-tools-prompt-btn" class="secondary-button small-button">Reset</button></div>
+        <p class="form-help">Instructions given to the LLM on how to call tools. Edit with caution.</p>
+        <textarea id="tools-system-prompt" name="tools_system_prompt" rows="8">${settings.tools_system_prompt || ''}</textarea>
+    `;
+    form.appendChild(promptsFieldset);
+
     const saveButton = document.createElement('button');
     saveButton.type = 'submit';
     saveButton.className = 'primary-button';
     saveButton.textContent = 'Save Changes';
     form.appendChild(saveButton);
-    populateModelDropdown('default-llm-model', settings.default_llm_model, window.availableModels);
+
     const mcpContainer = document.getElementById('mcp-servers-list-container');
     try {
         const servers = await fetchMcpServers();
@@ -533,11 +620,7 @@ export async function renderGlobalSettingsForm(settings, eventHandlers) {
         mcpContainer.innerHTML = '<p class="error">Could not load MCP servers.</p>';
     }
     document.getElementById('add-mcp-server-btn').addEventListener('click', () => showMcpServerModal(null, eventHandlers.saveMcpServer));
-    document.getElementById('refresh-models-btn-global').addEventListener('click', () => {
-        const ollamaUrl = document.getElementById('ollama-host-url').value;
-        if (!ollamaUrl) return showToast("Please enter an Ollama Server URL.", "error");
-        populateModelDropdown('default-llm-model', document.getElementById('default-llm-model').value, window.availableModels, true, ollamaUrl);
-    });
+
     document.getElementById('reset-context-prompt-btn').addEventListener('click', () => {
         document.getElementById('context-header-default-prompt').value = DEFAULT_CONTEXT_PROMPT;
         showToast('Prompt has been reset. Click "Save Changes" to apply.');
@@ -575,7 +658,6 @@ export function renderBotKnowledgeBaseView(bot, container, eventHandlers) {
         }
     });
 
-    // NOUVEAU: Ajout d'un écouteur pour réinitialiser la vue quand le champ est vidé.
     input.addEventListener('input', (e) => {
         if (e.target.value.trim() === '') {
             eventHandlers.loadKb(bot.id);
@@ -583,8 +665,6 @@ export function renderBotKnowledgeBaseView(bot, container, eventHandlers) {
     });
 }
 
-// MODIFIÉ: Amélioration de la robustesse et renommage pour la clarté.
-// Cette fonction est maintenant le seul point d'entrée pour afficher une liste d'utilisateurs.
 export function renderUserList(users, eventHandlers) {
     const resultsContainer = document.getElementById('user-kb-results-container');
     if (!resultsContainer) return;
@@ -595,7 +675,6 @@ export function renderUserList(users, eventHandlers) {
     }
 
     const userListItems = users.map(user => {
-        // Ajout de valeurs par défaut pour éviter l'affichage de "undefined"
         const displayName = user.display_name || 'Unnamed User';
         const username = user.username || 'unknown_user';
         const userId = user.discord_user_id;
@@ -624,7 +703,6 @@ export function renderUserList(users, eventHandlers) {
     });
 }
 
-// NOUVEAU: Fonction pour afficher la vue détaillée d'un profil utilisateur.
 export function renderUserDetailView(userDetail, eventHandlers) {
     const resultsContainer = document.getElementById('user-kb-results-container');
     if (!resultsContainer) return;
@@ -684,7 +762,6 @@ export function renderUserDetailView(userDetail, eventHandlers) {
         </div>
     `;
 
-    // Attach event listeners
     resultsContainer.querySelector('.back-to-list-btn').addEventListener('click', () => {
         if (eventHandlers.loadKb) eventHandlers.loadKb(userDetail.bot_id);
     });
@@ -704,13 +781,6 @@ export function renderUserDetailView(userDetail, eventHandlers) {
         });
     });
 }
-
-
-// SUPPRIMÉ: Cette fonction est obsolète car elle est basée sur l'ancienne structure de l'API (objet unique).
-// La nouvelle API retourne une liste, qui doit être gérée par renderUserList.
-/*
-export function renderUserSearchResults(userDetails, eventHandlers) { ... }
-*/
 
 export function renderFilesView(bot, container, uploadHandler) {
     container.innerHTML = `
@@ -1144,7 +1214,8 @@ export function showAddBotModal(createBotHandler) {
     `;
     document.body.appendChild(modal);
 
-    populateModelDropdown('add-bot-model', '', window.availableModels);
+    const modelSelectElement = modal.querySelector('#add-bot-model');
+    populateModelDropdown(modelSelectElement, '', window.availableModels);
 
     const closeModal = () => document.body.removeChild(modal);
     modal.querySelector('.close-button').addEventListener('click', closeModal);

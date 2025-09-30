@@ -32,6 +32,9 @@ def save_global_settings(db: Session, settings_update: GlobalSettingsUpdate) -> 
     update_data = settings_update.model_dump(exclude_unset=True)
 
     for key, value in update_data.items():
+        # CORRECTED: The condition `and value is not None` has been removed.
+        # This allows setting a field to `None` (clearing it), which is necessary
+        # when the user selects "(Not Set)" in the UI.
         if hasattr(db_settings, key):
             setattr(db_settings, key, value)
             

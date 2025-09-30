@@ -10,7 +10,7 @@ import redis
 
 from app.core import agent_orchestrator
 from app.core.agents import archivist, synthesizer
-from app.database import crud_bots, crud_user_notes, crud_user_profiles, sql_session
+from app.database import crud_bots, crud_user_notes, crud_user_profiles, sql_session, crud_settings
 from app.database import redis_session
 from app.schemas import chat_schemas
 
@@ -42,7 +42,6 @@ async def process_message(
     try:
         action = await agent_orchestrator.process_user_message(db=db, request=request)
 
-        # === MODIFICATION START: Save the plan to Redis ===
         if isinstance(action, chat_schemas.AcknowledgeAndExecuteResponse):
             context_to_save = {
                 "bot_id": request.bot_id,
@@ -56,7 +55,6 @@ async def process_message(
                 ex=CHAT_CONTEXT_EXPIRATION_S
             )
         elif isinstance(action, chat_schemas.SynthesizeResponse):
-            # For simple synthesis, we only need history (no plan)
             context_to_save = {
                 "bot_id": request.bot_id,
                 "history": [msg.model_dump() for msg in request.history],
@@ -68,7 +66,6 @@ async def process_message(
                 json.dumps(context_to_save),
                 ex=CHAT_CONTEXT_EXPIRATION_S
             )
-        # === MODIFICATION END ===
         
         return action
     except Exception as e:
@@ -95,21 +92,17 @@ async def stream_response(
     context = json.loads(context_data)
     bot_id = context.get("bot_id")
     history_data = context.get("history", [])
-    history = [chat_schemas.ChatMessage.model_validate(msg) for msg in history_data]
-    
-    # === MODIFICATION START: Retrieve plan instead of re-calculating ===
     plan_data = context.get("plan")
     tool_definitions = context.get("tool_definitions", [])
-    # === MODIFICATION END ===
 
     bot = crud_bots.get_bot(db=db, bot_id=bot_id)
     if not bot:
             raise HTTPException(status_code=404, detail=f"Bot with id {bot_id} not found.")
+    
+    global_settings = crud_settings.get_global_settings(db)
 
-    # === MODIFICATION START: Execute plan if it exists ===
     tool_results = []
     if plan_data and tool_definitions:
-        # Re-create the Pydantic model from the dictionary
         plan_result = chat_schemas.PlannerResult.model_validate(plan_data)
         logger.info(f"Executing pre-computed plan for message {message_id}")
         tool_results = await agent_orchestrator.execute_tool_plan(
@@ -118,20 +111,17 @@ async def stream_response(
         logger.info(f"Plan execution finished. Results: {tool_results}")
     else:
         logger.info(f"No execution plan found for message {message_id}, proceeding directly to synthesizer.")
-    # === MODIFICATION END: The entire redundant planning logic has been removed ===
 
     async def event_generator():
         try:
             logger.info(f"Starting synthesizer for message {message_id}")
             
-            response_stream = await synthesizer.run_synthesizer(
-                bot_name=bot.name,
-                bot_personality=bot.personality,
+            async for chunk in synthesizer.run_synthesizer(
+                bot=bot,
+                global_settings=global_settings,
                 history=history_data,
                 tool_results=tool_results
-            )
-            
-            async for chunk in response_stream:
+            ):
                 if await request.is_disconnected():
                     logger.warning("Client disconnected, stopping stream.")
                     break
@@ -143,11 +133,9 @@ async def stream_response(
             logger.error(f"Error during streaming for message {message_id}: {e}", exc_info=True)
             error_message = json.dumps({"error": "An error occurred while generating the response."})
             yield f"data: {error_message}\n\n"
-        # === MODIFICATION START: Ensure Redis key is deleted after streaming ===
         finally:
             logger.info(f"Cleaning up Redis context for message_id: {message_id}")
             redis_client.delete(context_key)
-        # === MODIFICATION END ===
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -162,7 +150,20 @@ async def archive_conversation(
     """
     logger.info(f"Archivist received conversation for user {request.user_display_name}")
     try:
-        archivist_decision = await archivist.run_archivist(request.conversation_history)
+        # MODIFIED: Fetch bot and global settings to pass to the archivist
+        bot = crud_bots.get_bot(db, request.bot_id)
+        if not bot:
+            logger.error(f"Archivist: Bot with ID {request.bot_id} not found.")
+            # We still return a 202 to not block the client, but log the error
+            return {"message": "Accepted, but bot not found."}
+
+        global_settings = crud_settings.get_global_settings(db)
+
+        archivist_decision = await archivist.run_archivist(
+            bot=bot,
+            global_settings=global_settings,
+            full_conversation=request.conversation_history
+        )
 
         if not archivist_decision.notes_to_create:
             logger.info("Archivist found nothing to save.")

@@ -20,11 +20,9 @@ export async function fetchWithAuth(url, options = {}) {
 /**
  * Fetches the list of available LLM models from the backend.
  * @param {string|null} ollamaUrl - An optional Ollama URL to test.
- * @returns {Promise<Array<string>>} - A sorted list of model names.
+ * @returns {Promise<Array<object>>} - A list of model objects.
  */
 export async function fetchModels(ollamaUrl = null) {
-    // Note: The backend endpoint is defined in `settings_api.py`, not `llm_api.py`.
-    // The prefix from settings_api.py is /settings.
     let url = `${API_BASE_URL}/settings/llm/models`;
     if (ollamaUrl) {
         url += `?ollama_url=${encodeURIComponent(ollamaUrl)}`;
@@ -35,8 +33,9 @@ export async function fetchModels(ollamaUrl = null) {
         throw new Error(errorData.detail || 'Failed to fetch models');
     }
     const models = await response.json();
-    // The endpoint now directly returns a list of strings.
-    return models.map(m => m.name).sort();
+    // FIX: The endpoint returns an array of objects like [{ "model": "name", ... }].
+    // We should return this array directly, as the UI layer is responsible for processing it.
+    return models;
 }
 
 /**

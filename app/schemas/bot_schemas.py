@@ -31,58 +31,84 @@ class BotCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=50, description="Unique name of the bot.")
     discord_token: Optional[str] = Field(None, min_length=10, description="Discord token for the bot. Optional.")
     system_prompt: Optional[str] = ""
-    # === AJOUT ===
     personality: Optional[str] = ""
-    llm_model: Optional[str] = None
     passive_listening_enabled: Optional[bool] = False
     gatekeeper_history_limit: Optional[int] = Field(5, gt=0, description="Number of past messages to provide to the Gatekeeper.")
     conversation_history_limit: Optional[int] = Field(15, gt=0, description="Number of past messages to provide for full conversation context.")
+    
+    # New categorized LLM settings
+    decisional_llm_server_url: Optional[str] = None
+    decisional_llm_model: Optional[str] = None
+    decisional_llm_context_window: Optional[int] = Field(None, gt=0)
+    
+    tools_llm_server_url: Optional[str] = None
+    tools_llm_model: Optional[str] = None
+    tools_llm_context_window: Optional[int] = Field(None, gt=0)
+    
+    output_client_llm_server_url: Optional[str] = None
+    output_client_llm_model: Optional[str] = None
+    output_client_llm_context_window: Optional[int] = Field(None, gt=0)
+
+    multimodal_llm_model: Optional[str] = None
 
 class BotUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=50)
     system_prompt: Optional[str] = Field(None)
-    # === AJOUT ===
     personality: Optional[str] = Field(None)
     discord_token: Optional[str] = Field(None, min_length=10)
     is_active: Optional[bool] = None
     passive_listening_enabled: Optional[bool] = None
-    gatekeeper_history_limit: Optional[int] = Field(None, gt=0, description="Number of past messages to provide to the Gatekeeper.")
-    conversation_history_limit: Optional[int] = Field(None, gt=0, description="Number of past messages to provide for full conversation context.")
+    gatekeeper_history_limit: Optional[int] = Field(None, gt=0)
+    conversation_history_limit: Optional[int] = Field(None, gt=0)
 
     llm_provider: Optional[str] = Field(None, max_length=50)
-    llm_model: Optional[str] = Field(None, max_length=100)
 
-    use_custom_ollama: Optional[bool] = None
-    custom_ollama_host_url: Optional[str] = Field(None, max_length=255)
-    llm_context_window: Optional[int] = Field(None, gt=0)
+    # New categorized LLM settings
+    decisional_llm_server_url: Optional[str] = None
+    decisional_llm_model: Optional[str] = None
+    decisional_llm_context_window: Optional[int] = Field(None, gt=0)
+    
+    tools_llm_server_url: Optional[str] = None
+    tools_llm_model: Optional[str] = None
+    tools_llm_context_window: Optional[int] = Field(None, gt=0)
+    
+    output_client_llm_server_url: Optional[str] = None
+    output_client_llm_model: Optional[str] = None
+    output_client_llm_context_window: Optional[int] = Field(None, gt=0)
 
-    # Le champ mcp_server_ids est maintenant obsolète et a été retiré.
-    # La gestion se fait via le endpoint PUT /bots/{bot_id}/mcp_servers.
-
+    multimodal_llm_model: Optional[str] = None
+    
     settings: Optional[Dict[str, Any]] = None
 
 class Bot(BaseModel):
     id: int
     name: str
-    discord_token: Optional[str] = None # <-- CHAMP AJOUTÉ POUR LA CORRECTION
+    discord_token: Optional[str] = None
     is_active: bool
     passive_listening_enabled: bool
     gatekeeper_history_limit: int
     conversation_history_limit: int
     system_prompt: str
-    # === AJOUT ===
     personality: str
     llm_provider: str
-    llm_model: Optional[str] = None
 
-    use_custom_ollama: bool
-    custom_ollama_host_url: Optional[str] = None
-    llm_context_window: Optional[int] = None
+    # New categorized LLM settings (all optional, can be null if using global settings)
+    decisional_llm_server_url: Optional[str] = None
+    decisional_llm_model: Optional[str] = None
+    decisional_llm_context_window: Optional[int] = None
+    
+    tools_llm_server_url: Optional[str] = None
+    tools_llm_model: Optional[str] = None
+    tools_llm_context_window: Optional[int] = None
+    
+    output_client_llm_server_url: Optional[str] = None
+    output_client_llm_model: Optional[str] = None
+    output_client_llm_context_window: Optional[int] = None
 
-    # MODIFIÉ: Utilise maintenant le nouveau schéma pour inclure la configuration.
+    multimodal_llm_model: Optional[str] = None
+
     mcp_servers: List[MCPServerAssociationDetails] = []
 
-    # Ce champ calculé reste utile pour l'UI, et il continue de fonctionner.
     @computed_field
     @property
     def mcp_server_ids(self) -> List[int]:
@@ -96,17 +122,11 @@ class Bot(BaseModel):
 
 # Schéma pour la configuration complète d'un bot, incluant les données sensibles
 class BotConfig(Bot):
-    # Le token est déjà dans la classe Bot parente, donc pas besoin de le redéclarer ici.
-
-    # NOUVEAU: Ajout du méta-prompt pour les outils.
     tools_system_prompt: Optional[str] = None
 
-    # Ce champ calculé continue de fonctionner car notre nouvel objet contient
-    # toujours les informations du serveur.
     @computed_field
     @property
     def mcp_server_urls(self) -> List[Dict[str, Any]]:
-        # On ne garde que les serveurs qui sont globalement activés
         urls_with_config = []
         for server in self.mcp_servers:
             if server.enabled:

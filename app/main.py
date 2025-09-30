@@ -1,4 +1,3 @@
-#### /app/app/main.py
 import logging
 from contextlib import asynccontextmanager
 
@@ -20,7 +19,7 @@ from app.api import (
 )
 # === MODIFICATION END ===
 from app.database import sql_session
-from app.core.llm import ollama_client
+# REMOVED: from app.core.llm import ollama_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,11 +30,12 @@ print("--- CHARGEMENT DE app/main.py (VERSION AVEC LIFESPAN ET INIT LLM) ---")
 async def lifespan(app: FastAPI):
     # --- Logique de Démarrage ---
     logger.info("Application startup...")
-    db = next(sql_session.get_db())
-    try:
-        await ollama_client.initialize_llm_client(db)
-    finally:
-        db.close()
+    # REMOVED: The llm_manager is stateless and does not require initialization.
+    # db = next(sql_session.get_db())
+    # try:
+    #     await ollama_client.initialize_llm_client(db)
+    # finally:
+    #     db.close()
     
     yield
     

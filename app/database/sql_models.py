@@ -1,4 +1,3 @@
-#### Fichier: app/database/sql_models.py
 from sqlalchemy import (
     Column, Integer, String, JSON, DateTime, ForeignKey, Text, Boolean,
     BigInteger, UniqueConstraint, CheckConstraint
@@ -19,10 +18,24 @@ class GlobalSettings(Base):
 
     id = Column(Integer, primary_key=True, default=1)
 
-    # --- Global LLM Settings ---
-    ollama_host_url = Column(String, default="http://host.docker.internal:11434")
-    default_llm_model = Column(String, nullable=False, default="llama3")
-    multimodal_llm_model = Column(String, nullable=False, default="llava")
+    # --- DEPRECATED Global LLM Settings (to be removed by migration) ---
+    # ollama_host_url = Column(String, default="http://host.docker.internal:11434")
+    # default_llm_model = Column(String, nullable=False, default="llama3")
+
+    # --- Categorized LLM Settings ---
+    decisional_llm_server_url = Column(String, nullable=True, default="http://host.docker.internal:11434")
+    decisional_llm_model = Column(String, nullable=True) # MODIFIED
+    decisional_llm_context_window = Column(Integer, nullable=True, default=4096) # MODIFIED
+
+    tools_llm_server_url = Column(String, nullable=True, default="http://host.docker.internal:11434")
+    tools_llm_model = Column(String, nullable=True) # MODIFIED
+    tools_llm_context_window = Column(Integer, nullable=True, default=8192) # MODIFIED
+
+    output_client_llm_server_url = Column(String, nullable=True, default="http://host.docker.internal:11434")
+    output_client_llm_model = Column(String, nullable=True) # MODIFIED
+    output_client_llm_context_window = Column(Integer, nullable=True, default=16384) # MODIFIED
+
+    multimodal_llm_model = Column(String, nullable=True, default="llava") # MODIFIED
 
     # --- Image Generation Service Settings ---
     image_generation_provider = Column(String, nullable=True, default="comfyui")
@@ -32,7 +45,7 @@ class GlobalSettings(Base):
     # --- Global Default System Prompts ---
     context_header_default_prompt = Column(
         Text,
-        nullable=False,
+        nullable=True, # MODIFIED
         default=(
             '[IF context_type == "DIRECT_MESSAGE"]\n'
             'You are in a private conversation with the user \'{user_display_name}\' (username: @{user_name}).\n'
@@ -48,7 +61,7 @@ class GlobalSettings(Base):
     )
     tools_system_prompt = Column(
         Text,
-        nullable=False,
+        nullable=True, # MODIFIED
         default=(
             "You have access to a set of tools you can use to answer the user's question.\n"
             "You must call tools by producing a JSON object with a `tool_calls` field.\n"
@@ -84,14 +97,31 @@ class Bot(Base):
     conversation_history_limit = Column(Integer, nullable=False, server_default='15')
     system_prompt = Column(Text, default="You are a helpful AI assistant.", nullable=False)
     
-    # --- NOUVEAU CHAMP AJOUTÉ ---
     personality = Column(Text, default="You are a helpful AI assistant.", nullable=False)
 
     llm_provider = Column(String, default="ollama")
-    llm_model = Column(String, nullable=True)
-    use_custom_ollama = Column(Boolean, default=False, nullable=False)
-    custom_ollama_host_url = Column(String, nullable=True)
-    llm_context_window = Column(Integer, nullable=True)
+
+    # --- DEPRECATED LLM Settings (to be removed by migration) ---
+    # llm_model = Column(String, nullable=True)
+    # use_custom_ollama = Column(Boolean, default=False, nullable=False)
+    # custom_ollama_host_url = Column(String, nullable=True)
+    # llm_context_window = Column(Integer, nullable=True)
+
+    # --- Bot-specific LLM Overrides (nullable) ---
+    decisional_llm_server_url = Column(String, nullable=True)
+    decisional_llm_model = Column(String, nullable=True)
+    decisional_llm_context_window = Column(Integer, nullable=True)
+
+    tools_llm_server_url = Column(String, nullable=True)
+    tools_llm_model = Column(String, nullable=True)
+    tools_llm_context_window = Column(Integer, nullable=True)
+
+    output_client_llm_server_url = Column(String, nullable=True)
+    output_client_llm_model = Column(String, nullable=True)
+    output_client_llm_context_window = Column(Integer, nullable=True)
+
+    multimodal_llm_model = Column(String, nullable=True)
+
     image_generation_settings = Column(JSON, nullable=True)
     settings = Column(JSON, default=dict)
     created_at = Column(DateTime, server_default=func.now())
@@ -99,7 +129,6 @@ class Bot(Base):
 
     # Relationships
     user_profiles = relationship("UserProfile", back_populates="bot", cascade="all, delete-orphan")
-    # SUPPRIMÉ: L'ancienne relation directe vers UserNote est retirée.
     uploaded_files = relationship("UploadedFile", back_populates="bot", cascade="all, delete-orphan")
 
     mcp_server_associations = relationship(
@@ -125,7 +154,6 @@ class UserProfile(Base):
     server_discord_id = Column(String, nullable=False, index=True)
     bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False, index=True)
 
-    # --- NOUVEAUX CHAMPS AJOUTÉS ---
     display_name = Column(String, nullable=False, server_default="Unknown User", index=True)
     username = Column(String, nullable=False, server_default="unknown_user", index=True)
 
@@ -136,7 +164,6 @@ class UserProfile(Base):
 
     bot = relationship("Bot", back_populates="user_profiles")
 
-    # NOUVEAU: Relation vers les notes pour un chargement facile.
     notes = relationship("UserNote", back_populates="profile", cascade="all, delete-orphan")
 
     __table_args__ = (
@@ -153,7 +180,6 @@ class UserNote(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     
-    # CORRIGÉ: Remplacé les IDs redondants par une clé étrangère directe vers UserProfile.
     user_profile_id = Column(Integer, ForeignKey("user_profiles.id"), nullable=False, index=True)
     
     author_discord_id = Column(String, nullable=False, index=True)
@@ -163,7 +189,6 @@ class UserNote(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # CORRIGÉ: La note est maintenant liée au profil, pas directement au bot.
     profile = relationship("UserProfile", back_populates="notes")
 
     __table_args__ = (
