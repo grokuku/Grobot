@@ -19,7 +19,6 @@ from app.schemas.chat_schemas import (
     AcknowledgeAndExecuteResponse,
     SynthesizeResponse,
     PlannerResult,
-    ParameterExtractorResult
 )
 
 # Database CRUD Imports
@@ -104,7 +103,8 @@ async def process_user_message(
     response_str = await llm_manager.call_llm(tools_config, param_ext_prompt, request.history, json_mode=True)
 
     try:
-        param_ext_result = ParameterExtractionResult.model_validate_json(response_str)
+        from app.schemas.chat_schemas import ParameterExtractorResult
+        param_ext_result = ParameterExtractorResult.model_validate_json(response_str)
     except Exception as e:
         logger.error(f"Failed to parse Parameter Extractor response: {e}. Stopping. Raw: '{response_str}'")
         return StopResponse(reason="Internal error in Parameter Extractor response parsing.")

@@ -1,3 +1,4 @@
+#### Fichier: discord_bot_launcher/client/event_handler.py
 import logging
 import asyncio
 import time
@@ -198,7 +199,6 @@ async def _download_and_prepare_file(image_url: str, guild: Optional[discord.Gui
         error_msg = f"Failed to retrieve or process the image from {image_url}."
         return None, error_msg
         
-# --- START OF FIX ---
 async def _handle_mcp_stream(websocket_url: str) -> Dict:
     try:
         async with websockets.connect(websocket_url) as websocket:
@@ -212,7 +212,35 @@ async def _handle_mcp_stream(websocket_url: str) -> Dict:
         logger.error(f"MCP stream connection error at {websocket_url}: {e}")
         return {"error": {"message": f"Failed to handle the tool stream: {e}"}}
     return {"error": {"message": "Tool stream ended without a result."}}
-# --- END OF FIX ---
+
+# --- START OF MODIFICATION: New helper function ---
+async def _send_prompt_part(
+    interaction: discord.Interaction,
+    header: str,
+    prompt_content: str,
+    filename: str
+):
+    """
+    Sends a part of a generated prompt, either as a text message in a code block
+    or as a file if it exceeds Discord's character limit.
+    """
+    DISCORD_CHAR_LIMIT = 2000
+    # Format the message with header and code block
+    message_as_text = f"{header}\n```\n{prompt_content}\n```"
+
+    if len(message_as_text) <= DISCORD_CHAR_LIMIT:
+        await interaction.followup.send(message_as_text)
+    else:
+        logger.info(f"Prompt part '{filename}' is too long for a message, sending as a file.")
+        try:
+            buffer = io.StringIO(prompt_content)
+            buffer.seek(0)
+            prompt_file = discord.File(buffer, filename=filename)
+            await interaction.followup.send(content=header, file=prompt_file)
+        except Exception as e:
+            logger.error(f"Failed to send prompt part as file: {e}", exc_info=True)
+            await interaction.followup.send(f"{header}\n_This prompt was too long to display and an error occurred while sending it as a file._")
+# --- END OF MODIFICATION ---
 
 async def _execute_and_process_tool_call(interaction: discord.Interaction, tool_name: str, arguments: Dict[str, Any]):
     acknowledgement_message: Optional[discord.Message] = None
@@ -230,7 +258,7 @@ async def _execute_and_process_tool_call(interaction: discord.Interaction, tool_
             await interaction.response.defer(ephemeral=False)
         
         if is_slow:
-            ack_content = f"Understood, I'm generating it now!"
+            ack_content = f"Understood, I'm working on it now!"
             acknowledgement_message = await interaction.followup.send(ack_content, wait=True)
             if reaction_emoji:
                 await acknowledgement_message.add_reaction(reaction_emoji)
@@ -239,12 +267,55 @@ async def _execute_and_process_tool_call(interaction: discord.Interaction, tool_
         if not result: raise Exception("Tool call failed: No response from backend.")
         if result.get("method") == "stream/start" and (ws_url := result.get("params", {}).get("ws_url")):
             result = await _handle_mcp_stream(ws_url)
+        
         if "error" in result:
-            error_message = result.get("error", {}).get("message", "An unknown error occurred.")
+            error_payload = result.get("error")
+            if isinstance(error_payload, dict):
+                error_message = error_payload.get("message", "An unknown error occurred.")
+            else:
+                logger.warning(f"Received malformed error response from tool server. Full response: {result}")
+                error_message = "Tool server returned a malformed error (see server logs for details)."
             raise Exception(f"Tool execution failed: {error_message}")
+        
+        # --- START OF MODIFICATION: Handle prompt_generator output ---
+        if tool_name == "generate_prompt":
+            content_list = result.get("result", {}).get("content", [])
+            if not content_list or "text" not in content_list[0]:
+                raise Exception("Invalid response format from prompt generator.")
+            
+            full_text = content_list[0]["text"]
+            
+            # Use regex to robustly extract prompts from within the code blocks
+            positive_match = re.search(r"\*\*Positive Prompt:\*\*\s*```\n?(.*?)\n?```", full_text, re.DOTALL)
+            negative_match = re.search(r"\*\*Negative Prompt:\*\*\s*```\n?(.*?)\n?```", full_text, re.DOTALL)
+            
+            positive_prompt = positive_match.group(1).strip() if positive_match else None
+            negative_prompt = negative_match.group(1).strip() if negative_match else None
+
+            if not positive_prompt or not negative_prompt:
+                logger.error(f"Could not parse positive/negative prompts from response: {full_text}")
+                raise Exception("Could not parse the response from the prompt generator.")
+            
+            # Send prompts in separate messages using the new helper function
+            await _send_prompt_part(
+                interaction,
+                header=f"<@{interaction.user.id}>, here is the **positive prompt**:",
+                prompt_content=positive_prompt,
+                filename="positive_prompt.txt"
+            )
+            await _send_prompt_part(
+                interaction,
+                header="And here is the **negative prompt**:",
+                prompt_content=negative_prompt,
+                filename="negative_prompt.txt"
+            )
+
+            if acknowledgement_message: await acknowledgement_message.delete()
+            return
+        # --- END OF MODIFICATION ---
 
         content_list = result.get("result", {}).get("content", [])
-        text_parts = [f"<@{interaction.user.id}>, here is the image you requested!"]
+        text_parts = [f"<@{interaction.user.id}>, here is the result for your request!"]
         files_to_send = []
         
         for block in content_list:
@@ -255,18 +326,15 @@ async def _execute_and_process_tool_call(interaction: discord.Interaction, tool_
                 if image_file: 
                     files_to_send.append(image_file)
                 if error_msg: 
-                    text_parts.append(f"_{error_msg}_") # Italicize image download errors
+                    text_parts.append(f"_{error_msg}_")
         
-        # Append the formatted prompt used, if available
         if tool_name == "generate_image" and "prompt" in arguments:
             text_parts.append(f"Prompt used: `{arguments['prompt']}`")
         
         final_text = "\n".join(text_parts).strip()
 
-        # Send the final result as a new message
         await interaction.followup.send(content=final_text, files=files_to_send)
 
-        # Clean up the acknowledgement message if one was sent
         if acknowledgement_message:
             try:
                 await acknowledgement_message.delete()
@@ -276,7 +344,6 @@ async def _execute_and_process_tool_call(interaction: discord.Interaction, tool_
     except Exception as e:
         logger.critical(f"Critical error in tool execution flow for '{tool_name}': {e}", exc_info=True)
         error_message = f"Sorry, a critical internal error occurred: {e}"
-        # Use followup.send for errors to ensure a message is always sent
         await interaction.followup.send(error_message, ephemeral=True)
     finally:
         pass
@@ -307,7 +374,7 @@ class UpscaleControlView(View):
             self.type_select.callback = self.select_callback
             self.add_item(self.type_select)
     async def select_callback(self, interaction: discord.Interaction):
-        self.selected_type = self.type_select.values[0]
+        self.selected_type = self.type_select.values
         await interaction.response.defer()
     @discord.ui.button(label="Start Upscale", style=discord.ButtonStyle.success)
     async def start_button(self, interaction: discord.Interaction, button: Button):
@@ -325,29 +392,59 @@ class UpscaleControlView(View):
         await self.original_interaction.edit_original_response(content="Upscale options timed out.", view=None)
 
 class DescribeControlView(View):
-    def __init__(self, original_interaction: discord.Interaction, image_url: str):
+    def __init__(self, original_interaction: discord.Interaction, image_url: str, description_type_choices: List[str], language_choices: List[str]):
         super().__init__(timeout=300)
         self.original_interaction = original_interaction
         self.image_url = image_url
-        self.selected_description_type = "prompt"
-        self.selected_language = "english"
-        self.type_select = Select(placeholder="Choose a description type...", options=[discord.SelectOption(label="Prompt", value="prompt", default=True), discord.SelectOption(label="Natural Language", value="natural")])
-        self.type_select.callback = self.type_select_callback
-        self.add_item(self.type_select)
-        self.language_select = Select(placeholder="Choose a language...", options=[discord.SelectOption(label="English", value="english", default=True), discord.SelectOption(label="French", value="french")])
-        self.language_select.callback = self.language_select_callback
-        self.add_item(self.language_select)
+
+        self.selected_description_type = description_type_choices if description_type_choices else None
+        self.selected_language = language_choices if language_choices else None
+
+        if description_type_choices:
+            self.type_select = Select(
+                placeholder="Choose a description type...",
+                options=[
+                    discord.SelectOption(
+                        label=choice.capitalize(), 
+                        value=choice, 
+                        default=(choice == self.selected_description_type)
+                    ) for choice in description_type_choices
+                ]
+            )
+            self.type_select.callback = self.type_select_callback
+            self.add_item(self.type_select)
+
+        if language_choices:
+            self.language_select = Select(
+                placeholder="Choose a language...",
+                options=[
+                    discord.SelectOption(
+                        label=choice.upper(), 
+                        value=choice, 
+                        default=(choice == self.selected_language)
+                    ) for choice in language_choices
+                ]
+            )
+            self.language_select.callback = self.language_select_callback
+            self.add_item(self.language_select)
+
     async def type_select_callback(self, interaction: discord.Interaction):
-        self.selected_description_type = self.type_select.values[0]
+        self.selected_description_type = self.type_select.values
         await interaction.response.defer()
+
     async def language_select_callback(self, interaction: discord.Interaction):
-        self.selected_language = self.language_select.values[0]
+        self.selected_language = self.language_select.values
         await interaction.response.defer()
+
     @discord.ui.button(label="Describe Image", style=discord.ButtonStyle.success, row=2)
     async def start_button(self, interaction: discord.Interaction, button: Button):
+        if not self.selected_description_type or not self.selected_language:
+            await interaction.response.send_message("Missing options to describe the image.", ephemeral=True)
+            return
         await interaction.response.edit_message(content="Starting image analysis...", view=None)
         args = {"input_image_url": self.image_url, "description_type": self.selected_description_type, "language": self.selected_language}
         await _execute_and_process_tool_call(interaction, "describe_image", args)
+
     async def on_timeout(self):
         await self.original_interaction.edit_original_response(content="Describe options timed out.", view=None)
 
@@ -356,7 +453,12 @@ async def setup(bot: commands.Bot, api_client: APIClient):
     _bot_instance = bot
     _api_client_instance = api_client
     async def style_names_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-        return await _get_choices_for_tool_param('generate_image', 'style_names', current)
+        tool_name = "generate_image"
+        param_name = "style_names"
+        if interaction.command.name == "prompt_generator":
+            tool_name = "generate_prompt"
+            param_name = "render_style"
+        return await _get_choices_for_tool_param(tool_name, param_name, current)
     async def render_type_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
         return await _get_choices_for_tool_param('generate_image', 'render_type', current)
     
@@ -380,6 +482,26 @@ async def setup(bot: commands.Bot, api_client: APIClient):
             args['style_names'] = [s.strip() for s in args['style_names'].split(',') if s.strip()]
         await _execute_and_process_tool_call(interaction, "generate_image", args)
 
+    @bot.tree.command(name="prompt_generator", description="Generates a creative prompt for image generation.")
+    @app_commands.describe(
+        subject="The main subject or core idea for the prompt.",
+        elements="Optional details, context, or specific elements to include.",
+        render_style="The render style to influence the prompt."
+    )
+    @app_commands.autocomplete(render_style=style_names_autocomplete)
+    async def prompt_generator(interaction: discord.Interaction, subject: Optional[str] = None, elements: Optional[str] = None, render_style: Optional[str] = None):
+        final_elements = []
+        if elements:
+            final_elements = [e.strip() for e in elements.split(',') if e.strip()]
+        
+        args = {
+            "subject": subject,
+            "elements": final_elements,
+            "render_style": render_style
+        }
+        args = {k: v for k, v in args.items() if v is not None}
+        await _execute_and_process_tool_call(interaction, "generate_prompt", args)
+
     @bot.tree.context_menu(name="Upscale Image")
     async def upscale_context_menu(interaction: discord.Interaction, target: discord.Message):
         image_url = _find_image_url_in_message(target)
@@ -398,7 +520,23 @@ async def setup(bot: commands.Bot, api_client: APIClient):
         if not image_url:
             await interaction.response.send_message("I couldn't find an image in that message.", ephemeral=True)
             return
-        view = DescribeControlView(interaction, image_url)
+        
+        definitions = await _get_tool_definitions_with_cache()
+        tool_def = next((t for t in definitions if t.get("name") == "describe_image"), None)
+
+        if not tool_def:
+            await interaction.response.send_message("Sorry, the 'describe_image' tool seems to be unavailable.", ephemeral=True)
+            return
+
+        properties = tool_def.get("inputSchema", {}).get("properties", {})
+        desc_type_choices = properties.get("description_type", {}).get("enum", [])
+        language_choices = properties.get("language", {}).get("enum", [])
+
+        if not desc_type_choices or not language_choices:
+            await interaction.response.send_message("Sorry, I couldn't retrieve the necessary options for the describe tool.", ephemeral=True)
+            return
+
+        view = DescribeControlView(interaction, image_url, desc_type_choices, language_choices)
         await interaction.response.send_message("Ready to describe this image:", view=view, ephemeral=True)
 
     bot.add_listener(on_message)

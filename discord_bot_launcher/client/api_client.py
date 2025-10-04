@@ -43,7 +43,7 @@ class APIClient:
         except httpx.HTTPStatusError as e:
             logger.error(f"Failed to get tool definitions, status {e.response.status_code}: {e.response.text}")
             return []
-        except httpx.RequestError as e:
+        except (httpx.RequestError, json.JSONDecodeError) as e:
             logger.error(f"An error occurred while requesting tool definitions: {e}")
             return []
         except Exception as e:
@@ -65,6 +65,9 @@ class APIClient:
         try:
             response = await self._client.post(url, json=payload)
             response.raise_for_status()
+            # Handle cases where the response body is empty but status is OK
+            if not response.content:
+                return {"jsonrpc": "2.0", "error": {"code": -32003, "message": "API returned an empty successful response."}}
             return response.json()
         except httpx.HTTPStatusError as e:
             logger.error(f"Tool call failed with status {e.response.status_code}: {e.response.text}")
@@ -72,6 +75,9 @@ class APIClient:
         except httpx.RequestError as e:
             logger.error(f"An error occurred while calling tool '{tool_name}': {e}")
             return {"jsonrpc": "2.0", "error": {"code": -32001, "message": "Network error while contacting tool proxy."}}
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode JSON from tool call response: {e.doc}")
+            return {"jsonrpc": "2.0", "error": {"code": -32700, "message": "Invalid JSON response from the server."}}
         except Exception as e:
             logger.error(f"An unexpected error occurred in call_tool: {e}", exc_info=True)
             return {"jsonrpc": "2.0", "error": {"code": -32002, "message": "An unexpected client error occurred."}}
@@ -149,7 +155,6 @@ class APIClient:
         except Exception as e:
             logger.error(f"An unexpected error occurred during streaming: {e}", exc_info=True)
             yield "\n\n_Sorry, a critical error occurred while retrieving the final response._"
-
 
     async def archive_conversation(
         self,
