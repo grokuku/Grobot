@@ -11,6 +11,7 @@ class ChatMessage(BaseModel):
     """Represents a single message in the conversation history."""
     role: str  # e.g., "user", "assistant", "tool"
     content: str
+    name: Optional[str] = None
 
 class ProcessMessageRequest(BaseModel):
     """Request body for the main chat processing endpoint."""

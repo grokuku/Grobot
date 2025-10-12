@@ -1,22 +1,24 @@
-// frontend/src/ui.js
-import { fetchBots, fetchModels, fetchMcpServers, searchFilesForBot, fetchMcpServerSchema, fetchBotMemory, fetchMcpServerTools } from './api.js';
+// FILE: frontend/src/ui.js
+
+import { fetchBots, fetchModels, fetchMcpServers, searchFilesForBot, fetchMcpServerSchema, fetchBotMemory, fetchMcpServerTools, fetchWorkflowsForBot, runWorkflow, deleteWorkflow, fetchWorkflow, fetchLLMEvaluationResults } from './api.js';
+import { showWorkflowEditorModal } from './workflow_editor.js';
 import { handleDeleteMemoryEntry } from './events.js';
 
 const DEFAULT_CONTEXT_PROMPT = `[IF context_type == "DIRECT_MESSAGE"]
-You are in a private conversation with the user '{user_display_name}' (username: @{user_name}).
-[/IF][IF context_type == "SERVER_CHANNEL"]
-This conversation is in the server '{server_name}', in the channel '#{channel_name}'.
-The latest message is from '{user_display_name}' (username: @{user_name}).
-[/IF][IF channel_is_thread == True]
-This conversation is in a thread titled '{thread_name}'.
-[/IF]`;
+    You are in a private conversation with the user '{user_display_name}' (username: @{user_name}).
+    [/IF][IF context_type == "SERVER_CHANNEL"]
+    This conversation is in the server '{server_name}', in the channel '#{channel_name}'.
+    The latest message is from '{user_display_name}' (username: @{user_name}).
+    [/IF][IF channel_is_thread == True]
+    This conversation is in a thread titled '{thread_name}'.
+    [/IF]`;
 
 const DEFAULT_TOOLS_PROMPT = `You have access to a set of tools you can use to answer the user's question.
-You must call tools by producing a JSON object with a \`tool_calls\` field.
-The \`tool_calls\` field must be a list of objects, where each object has a \`function\` field.
-The \`function\` object must have a \`name\` and an \`arguments\` field. The \`arguments\` field must be a JSON object with the arguments to the function.
-If you need to call a tool, you must stop generating text and produce the JSON object.
-If you don't need to call a tool, you must answer the user's question directly.`;
+    You must call tools by producing a JSON object with a \`tool_calls\` field.
+    The \`tool_calls\` field must be a list of objects, where each object has a \`function\` field.
+    The \`function\` object must have a \`name\` and an \`arguments\` field. The \`arguments\` field must be a JSON object with the arguments to the function.
+    If you need to call a tool, you must stop generating text and produce the JSON object.
+    If you don't need to call a tool, you must answer the user's question directly.`;
 
 
 // --- TOAST & SPINNER UTILS ---
@@ -79,10 +81,10 @@ export function renderThemeControls() {
     themeToggleBtn.className = 'theme-toggle-btn';
     themeToggleBtn.title = "Toggle Light/Dark Mode";
     themeToggleBtn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M6 .278a.768.768 0 0 1 .08.858 7.208 7.208 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277.527 0 1.04-.055 1.533-.16a.787.787 0 0 1 .81.316.733.733 0 0 1-.031.893A8.349 8.349 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.752.752 0 0 1 6 .278Z"/>
-            <path d="M10.794 3.148a.217.217 0 0 1 .412 0l.387 1.162c.173.518.579.924 1.097 1.097l1.162.387a.217.217 0 0 1 0 .412l-1.162.387a1.734 1.734 0 0 0-1.097 1.097l-.387 1.162a.217.217 0 0 1-.412 0l-.387-1.162A1.734 1.734 0 0 0 9.31 6.593l-1.162-.387a.217.217 0 0 1 0 .412l1.162-.387a1.734 1.734 0 0 0 1.097-1.097l.387-1.162ZM13.863.099a.145.145 0 0 1 .274 0l.258.774c.115.346.386.617.732.732l.774.258a.145.145 0 0 1 0 .274l-.774.258a1.156 1.156 0 0 0-.732.732l-.258.774a.145.145 0 0 1-.274 0l-.258-.774a1.156 1.156 0 0 0-.732-.732l-.774-.258a.145.145 0 0 1 0 .274l.774.258c.346-.115.617-.386.732-.732L13.863.1z"/>
-        </svg>`;
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M6 .278a.768.768 0 0 1 .08.858 7.208 7.208 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277.527 0 1.04-.055 1.533-.16a.787.787 0 0 1 .81.316.733.733 0 0 1-.031.893A8.349 8.349 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.752.752 0 0 1 6 .278Z"/>
+                <path d="M10.794 3.148a.217.217 0 0 1 .412 0l.387 1.162c.173.518.579.924 1.097 1.097l1.162.387a.217.217 0 0 1 0 .412l-1.162.387a1.734 1.734 0 0 0-1.097 1.097l-.387 1.162a.217.217 0 0 1-.412 0l-.387-1.162A1.734 1.734 0 0 0 9.31 6.593l-1.162-.387a.217.217 0 0 1 0 .412l1.162-.387a1.734 1.734 0 0 0 1.097-1.097l.387-1.162ZM13.863.099a.145.145 0 0 1 .274 0l.258.774c.115.346.386.617.732.732l.774.258a.145.145 0 0 1 0 .274l-.774.258a1.156 1.156 0 0 0-.732.732l-.258.774a.145.145 0 0 1-.274 0l-.258-.774a1.156 1.156 0 0 0-.732-.732l-.774-.258a.145.145 0 0 1 0 .274l.774.258c.346-.115.617-.386.732-.732L13.863.1z"/>
+            </svg>`;
     themeToggleBtn.addEventListener('click', () => {
         const newTheme = document.body.classList.contains('dark-mode') ? 'light' : 'dark';
         applyTheme(newTheme, localStorage.getItem('color') || 'blue');
@@ -140,9 +142,9 @@ export function renderSidebar(bots, selectBotCallback) {
         botElement.className = 'sidebar-bot-item';
         botElement.dataset.botId = bot.id;
         botElement.innerHTML = `
-            <span class="bot-status ${bot.is_active ? 'online' : 'offline'}"></span>
-            <span class="bot-name">${bot.name}</span>
-        `;
+                <span class="bot-status ${bot.is_active ? 'online' : 'offline'}"></span>
+                <span class="bot-name">${bot.name}</span>
+            `;
         sidebarList.appendChild(botElement);
     });
 
@@ -157,26 +159,27 @@ export function renderSidebar(bots, selectBotCallback) {
 export async function renderMainContent(bot, activeTab, tabChangeCallback, logConnectCallback, settingsFormCallback, filesViewCallback, testChatCallback, kbCallback) {
     const mainContent = document.getElementById('main-content');
     mainContent.innerHTML = `
-        <header id="chat-header">
-            <div id="chat-header-title">
-                <h3>${bot.name}</h3>
-            </div>
-            <div id="theme-controls-container"></div>
-        </header>
-        <div id="central-panel-content">
-                <div class="tab-container">
-                <div class="tabs">
-                    <button class="tab-link ${activeTab === 'test-chat' ? 'active' : ''}" data-tab="test-chat" data-bot-id="${bot.id}">Test Chat</button>
-                    <button class="tab-link ${activeTab === 'logs' ? 'active' : ''}" data-tab="logs" data-bot-id="${bot.id}">Logs</button>
-                    <button class="tab-link ${activeTab === 'settings' ? 'active' : ''}" data-tab="settings" data-bot-id="${bot.id}">Settings</button>
-                    <button class="tab-link ${activeTab === 'files' ? 'active' : ''}" data-tab="files" data-bot-id="${bot.id}">Files</button>
-                    <button class="tab-link ${activeTab === 'memory' ? 'active' : ''}" data-tab="memory" data-bot-id="${bot.id}">Memory</button>
-                    <button class="tab-link ${activeTab === 'knowledge-base' ? 'active' : ''}" data-tab="knowledge-base" data-bot-id="${bot.id}">Knowledge Base</button>
+            <header id="chat-header">
+                <div id="chat-header-title">
+                    <h3>${bot.name}</h3>
                 </div>
-                <div id="tab-content" class="tab-content"></div>
+                <div id="theme-controls-container"></div>
+            </header>
+            <div id="central-panel-content">
+                    <div class="tab-container">
+                    <div class="tabs">
+                        <button class="tab-link ${activeTab === 'test-chat' ? 'active' : ''}" data-tab="test-chat" data-bot-id="${bot.id}">Test Chat</button>
+                        <button class="tab-link ${activeTab === 'logs' ? 'active' : ''}" data-tab="logs" data-bot-id="${bot.id}">Logs</button>
+                        <button class="tab-link ${activeTab === 'settings' ? 'active' : ''}" data-tab="settings" data-bot-id="${bot.id}">Settings</button>
+                        <button class="tab-link ${activeTab === 'files' ? 'active' : ''}" data-tab="files" data-bot-id="${bot.id}">Files</button>
+                        <button class="tab-link ${activeTab === 'memory' ? 'active' : ''}" data-tab="memory" data-bot-id="${bot.id}">Memory</button>
+                        <button class="tab-link ${activeTab === 'knowledge-base' ? 'active' : ''}" data-tab="knowledge-base" data-bot-id="${bot.id}">Knowledge Base</button>
+                        <button class="tab-link ${activeTab === 'workflows' ? 'active' : ''}" data-tab="workflows" data-bot-id="${bot.id}">Workflows</button>
+                    </div>
+                    <div id="tab-content" class="tab-content"></div>
+                </div>
             </div>
-        </div>
-    `;
+        `;
 
     renderThemeControls();
     await renderTabContent(bot, activeTab, logConnectCallback, settingsFormCallback, filesViewCallback, testChatCallback, kbCallback);
@@ -225,6 +228,9 @@ export async function renderTabContent(bot, tabName, logConnectCallback, setting
             break;
         case 'knowledge-base':
             renderBotKnowledgeBaseView(bot, tabContent, kbCallback);
+            break;
+        case 'workflows':
+            await renderBotWorkflowsView(bot, tabContent);
             break;
     }
 }
@@ -288,41 +294,88 @@ export function populateModelDropdown(selectTarget, selectedValue, availableMode
 
 function renderBotSettingsGeneralTab(bot, draftBot, container) {
     container.innerHTML = `
-        <fieldset>
-            <legend>General</legend>
-            <label for="bot-name">Bot Name</label>
-            <input type="text" id="bot-name" name="name" value="${bot.name}" required>
-            <label for="discord-token">Discord Token</label>
-            <input type="password" id="discord-token" name="discord_token" value="${bot.discord_token ? '********' : ''}" placeholder="Enter new token to change">
-            <div class="form-actions">
-                    <label for="bot-is-active" class="checkbox-label">
-                    <div class="switch">
-                        <input type="checkbox" id="bot-is-active" name="is_active" ${bot.is_active ? 'checked' : ''}>
-                        <span class="slider round"></span>
-                    </div>
-                    <span>Bot Active</span>
-                </label>
-            </div>
-        </fieldset>
-        <fieldset>
-            <legend>Behavior</legend>
-            <div class="form-actions">
-                <label for="bot-passive-listening" class="checkbox-label">
-                    <div class="switch">
-                        <input type="checkbox" id="bot-passive-listening" name="passive_listening_enabled" ${bot.passive_listening_enabled ? 'checked' : ''}>
-                        <span class="slider round"></span>
-                    </div>
-                    <span>Enable Passive Listening</span>
-                </label>
-                <p class="form-help">If enabled, the bot will listen to all messages in a channel and decide for itself when to respond, even if not directly mentioned. Requires the 'Message Content' privileged intent.</p>
-            </div>
-        </fieldset>
-    `;
+            <fieldset>
+                <legend>General</legend>
+                <label for="bot-name">Bot Name</label>
+                <input type="text" id="bot-name" name="name" value="${bot.name}" required>
+                <label for="discord-token">Discord Token</label>
+                <input type="password" id="discord-token" name="discord_token" value="${bot.discord_token ? '********' : ''}" placeholder="Enter new token to change">
+                <div class="form-actions">
+                        <label for="bot-is-active" class="checkbox-label">
+                        <div class="switch">
+                            <input type="checkbox" id="bot-is-active" name="is_active" ${bot.is_active ? 'checked' : ''}>
+                            <span class="slider round"></span>
+                        </div>
+                        <span>Bot Active</span>
+                    </label>
+                </div>
+            </fieldset>
+            <fieldset>
+                <legend>Behavior</legend>
+                <div class="form-actions">
+                    <label for="bot-passive-listening" class="checkbox-label">
+                        <div class="switch">
+                            <input type="checkbox" id="bot-passive-listening" name="passive_listening_enabled" ${bot.passive_listening_enabled ? 'checked' : ''}>
+                            <span class="slider round"></span>
+                        </div>
+                        <span>Enable Passive Listening</span>
+                    </label>
+                    <p class="form-help">If enabled, the bot will listen to all messages in a channel and decide for itself when to respond, even if not directly mentioned. Requires the 'Message Content' privileged intent.</p>
+                </div>
+            </fieldset>
+        `;
 
     container.querySelector('#bot-name').addEventListener('input', (e) => draftBot.name = e.target.value);
     container.querySelector('#discord-token').addEventListener('input', (e) => draftBot.discord_token = e.target.value);
     container.querySelector('#bot-is-active').addEventListener('change', (e) => draftBot.is_active = e.target.checked);
     container.querySelector('#bot-passive-listening').addEventListener('change', (e) => draftBot.passive_listening_enabled = e.target.checked);
+}
+
+function renderEvaluationResults(container, results) {
+    if (!results || results.length === 0) {
+        container.innerHTML = `<p class="form-help">No evaluation results found for this category.</p>`;
+        return;
+    }
+
+    const tableRows = results.map(run => {
+        const statusClass = `status-${run.status.toLowerCase()}`;
+        const duration = (run.started_at && run.completed_at)
+            ? `${((new Date(run.completed_at) - new Date(run.started_at)) / 1000).toFixed(2)}s`
+            : 'N/A';
+
+        return `
+            <tr>
+                <td><span class="status-badge ${statusClass}">${run.status}</span></td>
+                <td>${run.llm_model_name}</td>
+                <td>${run.llm_context_window || 'N/A'}</td>
+                <td>${run.started_at ? new Date(run.started_at).toLocaleString() : 'N/A'}</td>
+                <td>${duration}</td>
+                <td>${run.summary_reliability_score !== null ? `${run.summary_reliability_score.toFixed(1)}%` : 'N/A'}</td>
+                <td>${run.summary_avg_response_ms !== null ? `${run.summary_avg_response_ms.toFixed(0)} ms` : 'N/A'}</td>
+                <td title="${run.error_message || ''}">${run.error_message ? 'Yes' : 'No'}</td>
+            </tr>
+        `;
+    }).join('');
+
+    container.innerHTML = `
+        <table class="files-table evaluation-results-table">
+            <thead>
+                <tr>
+                    <th>Status</th>
+                    <th>Model Name</th>
+                    <th>Context</th>
+                    <th>Started At</th>
+                    <th>Duration</th>
+                    <th>Reliability</th>
+                    <th>Avg. Response</th>
+                    <th>Error</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${tableRows}
+            </tbody>
+        </table>
+    `;
 }
 
 function createLlmConfigBlock(
@@ -333,47 +386,81 @@ function createLlmConfigBlock(
     const serverField = `${fieldIdPrefix}${category}_llm_server`;
     const modelField = `${fieldIdPrefix}${category}_llm_model`;
     const contextField = `${fieldIdPrefix}${category}_llm_context_window`;
+    const resultsContainerId = `evaluation-results-${fieldIdPrefix}${category}`;
 
     const fieldset = document.createElement('fieldset');
     fieldset.innerHTML = `
-        <legend>${title}</legend>
-        <p class="form-help">${helpText}</p>
-        <div class="llm-config-grid">
-            <div>
-                <label for="${serverField}">Server URL</label>
-                <input type="text" id="${serverField}" name="${serverField}" value="${serverValue || ''}" placeholder="e.g., http://host.docker.internal:11434">
-            </div>
-            <div>
-                <label for="${modelField}">Model Name</label>
-                <div class="model-select-container">
-                    <select id="${modelField}" name="${modelField}"></select>
-                    <button type="button" id="refresh-${fieldIdPrefix}${category}-models-btn" class="refresh-btn icon-btn">⟳</button>
+            <legend>${title}</legend>
+            <p class="form-help">${helpText}</p>
+            <div class="llm-config-grid">
+                <div>
+                    <label for="${serverField}">Server URL</label>
+                    <input type="text" id="${serverField}" name="${serverField}" value="${serverValue || ''}" placeholder="e.g., http://host.docker.internal:11434">
+                </div>
+                <div>
+                    <label for="${modelField}">Model Name</label>
+                    <div class="model-select-container">
+                        <select id="${modelField}" name="${modelField}"></select>
+                        <button type="button" id="refresh-${fieldIdPrefix}${category}-models-btn" class="refresh-btn icon-btn">⟳</button>
+                    </div>
+                </div>
+                <div>
+                    <label for="${contextField}">Context Window</label>
+                    <input type="number" id="${contextField}" name="${contextField}" value="${contextValue || ''}" placeholder="e.g., 8192">
                 </div>
             </div>
-            <div>
-                <label for="${contextField}">Context Window</label>
-                <input type="number" id="${contextField}" name="${contextField}" value="${contextValue || ''}" placeholder="e.g., 8192">
+            <div class="form-actions" style="margin-top: 0.5rem; justify-content: flex-end;">
+                <button type="button" class="secondary-button view-evaluation-results-btn"
+                        data-category="${category}"
+                        data-results-container-id="${resultsContainerId}">
+                    View Results
+                </button>
+                <button type="button" class="primary-button evaluate-llm-btn"
+                        data-category="${category}"
+                        data-server-field-id="${serverField}"
+                        data-model-field-id="${modelField}"
+                        data-context-field-id="${contextField}">
+                    Evaluate
+                </button>
             </div>
-        </div>
-    `;
+            <div class="evaluation-results-container" id="${resultsContainerId}"></div>
+        `;
 
-    // Find the select element within the in-memory fieldset.
     const modelSelectElement = fieldset.querySelector(`#${modelField}`);
 
-    // Attach event listeners to update the draft state for bot settings
     if (draftState) {
         fieldset.querySelector(`#${serverField}`).addEventListener('input', (e) => draftState[serverField] = e.target.value);
         modelSelectElement.addEventListener('change', (e) => draftState[modelField] = e.target.value);
         fieldset.querySelector(`#${contextField}`).addEventListener('input', (e) => draftState[contextField] = e.target.value ? parseInt(e.target.value, 10) : null);
     }
 
-    // Event listener for the refresh button is generic
     fieldset.querySelector(`#refresh-${fieldIdPrefix}${category}-models-btn`).addEventListener('click', () => {
         const serverUrlInput = fieldset.querySelector(`#${serverField}`);
         populateModelDropdown(modelSelectElement, modelSelectElement.value, [], true, serverUrlInput.value);
     });
 
-    // Populate dropdown from global cache, passing the element object directly.
+    fieldset.querySelector('.view-evaluation-results-btn').addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        const category = btn.dataset.category;
+        const container = document.getElementById(btn.dataset.resultsContainerId);
+
+        if (!container) return; // Defensive check
+
+        if (container.innerHTML.trim() !== '') {
+            container.innerHTML = ''; // Hide if already visible
+            return;
+        }
+
+        container.innerHTML = `<p class="form-help">Loading results...</p>`;
+        try {
+            const results = await fetchLLMEvaluationResults(category);
+            renderEvaluationResults(container, results);
+        } catch (error) {
+            container.innerHTML = `<p class="error">Error fetching evaluation results: ${error.message}</p>`;
+            showToast(`Error: ${error.message}`, 'error');
+        }
+    });
+
     populateModelDropdown(modelSelectElement, modelValue, window.availableModels);
 
     return fieldset;
@@ -388,12 +475,14 @@ function renderBotSettingsLlmTab(bot, draftBot, container) {
     );
 
     const toolBlock = createLlmConfigBlock(
-        'tool', 'Tool-Use Model', 'Model with strong logical reasoning...', draftBot,
+        'tools', // MODIFIED: Corrected category name from 'tool' to 'tools'
+        'Tool-Use Model', 'Model with strong logical reasoning...', draftBot,
         bot.tools_llm_server_url, bot.tools_llm_model, bot.tools_llm_context_window
     );
 
     const outputBlock = createLlmConfigBlock(
-        'output', 'Client-Facing Output Model', 'Powerful, creative model...', draftBot,
+        'output_client', // MODIFIED: Corrected category name from 'output' to 'output_client'
+        'Client-Facing Output Model', 'Powerful, creative model...', draftBot,
         bot.output_client_llm_server_url, bot.output_client_llm_model, bot.output_client_llm_context_window
     );
 
@@ -404,19 +493,19 @@ function renderBotSettingsLlmTab(bot, draftBot, container) {
 
 function renderBotSettingsPersonalityTab(bot, draftBot, container) {
     container.innerHTML = `
-        <fieldset>
-            <legend>Personality</legend>
-            <label for="bot-personality">Core Personality Prompt</label>
-            <p class="form-help">This is the main personality definition for the bot. It's the first instruction given to the final LLM agent.</p>
-            <textarea id="bot-personality" name="personality" rows="12">${bot.personality || ''}</textarea>
-        </fieldset>
-        <fieldset style="margin-top: 1.5rem;">
-            <legend>System Prompt (Legacy)</legend>
-            <label for="bot-system-prompt">Main System Prompt</label>
-            <p class="form-help">Legacy system prompt, mainly used for older agent architectures. Its usage may be phased out.</p>
-            <textarea id="bot-system-prompt" name="system_prompt" rows="8">${bot.system_prompt || ''}</textarea>
-        </fieldset>
-    `;
+            <fieldset>
+                <legend>Personality</legend>
+                <label for="bot-personality">Core Personality Prompt</label>
+                <p class="form-help">This is the main personality definition for the bot. It's the first instruction given to the final LLM agent.</p>
+                <textarea id="bot-personality" name="personality" rows="12">${bot.personality || ''}</textarea>
+            </fieldset>
+            <fieldset style="margin-top: 1.5rem;">
+                <legend>System Prompt (Legacy)</legend>
+                <label for="bot-system-prompt">Main System Prompt</label>
+                <p class="form-help">Legacy system prompt, mainly used for older agent architectures. Its usage may be phased out.</p>
+                <textarea id="bot-system-prompt" name="system_prompt" rows="8">${bot.system_prompt || ''}</textarea>
+            </fieldset>
+        `;
     container.querySelector('#bot-personality').addEventListener('input', (e) => draftBot.personality = e.target.value);
     container.querySelector('#bot-system-prompt').addEventListener('input', (e) => draftBot.system_prompt = e.target.value);
 }
@@ -499,17 +588,17 @@ export async function renderBotSettingsForm(bot, container, saveHandler) {
     let draftBot = JSON.parse(JSON.stringify(bot));
     if (draftBot.mcp_servers === null) draftBot.mcp_servers = [];
     container.innerHTML = `
-        <form id="bot-settings-form" class="bot-settings-form">
-            <div class="sub-tabs">
-                <button type="button" class="sub-tab-link active" data-tab="general">General</button>
-                <button type="button" class="sub-tab-link" data-tab="llm">LLM</button>
-                <button type="button" class="sub-tab-link" data-tab="personality">Personality</button>
-                <button type="button" class="sub-tab-link" data-tab="tools">Tools</button>
-            </div>
-            <div id="settings-sub-tab-content" class="sub-tab-content"></div>
-            <button type="submit" class="primary-button" style="margin-top: 1.5rem;">Save Bot Configuration</button>
-        </form>
-    `;
+            <form id="bot-settings-form" class="bot-settings-form">
+                <div class="sub-tabs">
+                    <button type="button" class="sub-tab-link active" data-tab="general">General</button>
+                    <button type="button" class="sub-tab-link" data-tab="llm">LLM</button>
+                    <button type="button" class="sub-tab-link" data-tab="personality">Personality</button>
+                    <button type="button" class="sub-tab-link" data-tab="tools">Tools</button>
+                </div>
+                <div id="settings-sub-tab-content" class="sub-tab-content"></div>
+                <button type="submit" class="primary-button" style="margin-top: 1.5rem;">Save Bot Configuration</button>
+            </form>
+        `;
     const form = container.querySelector('#bot-settings-form');
     const subTabContent = container.querySelector('#settings-sub-tab-content');
     const renderers = {
@@ -539,16 +628,16 @@ export async function renderBotSettingsForm(bot, container, saveHandler) {
 export async function renderGlobalSettingsForm(settings, eventHandlers) {
     const mainContent = document.getElementById('main-content');
     mainContent.innerHTML = `
-        <header id="chat-header">
-            <div id="chat-header-title"><h3>Global Settings</h3></div>
-            <div id="theme-controls-container"></div>
-        </header>
-        <div id="central-panel-content">
-            <div class="settings-form-container">
-                <form id="global-settings-form" class="bot-settings-form"></form>
+            <header id="chat-header">
+                <div id="chat-header-title"><h3>Global Settings</h3></div>
+                <div id="theme-controls-container"></div>
+            </header>
+            <div id="central-panel-content">
+                <div class="settings-form-container">
+                    <form id="global-settings-form" class="bot-settings-form"></form>
+                </div>
             </div>
-        </div>
-    `;
+        `;
     document.querySelectorAll('.sidebar-bot-item.selected')?.forEach(el => el.classList.remove('selected'));
     renderThemeControls();
     const form = document.getElementById('global-settings-form');
@@ -566,14 +655,16 @@ export async function renderGlobalSettingsForm(settings, eventHandlers) {
         'default_'
     ));
     llmFieldset.appendChild(createLlmConfigBlock(
-        'tool', 'Default Tool-Use Model', 'Default for logic and structured JSON generation.', null,
+        'tool', // --- CORRECTED --- Was 'tools'
+        'Default Tool-Use Model', 'Default for logic and structured JSON generation.', null,
         settings.default_tool_llm_server,
         settings.default_tool_llm_model,
         settings.default_tool_llm_context_window,
         'default_'
     ));
     llmFieldset.appendChild(createLlmConfigBlock(
-        'output', 'Default Output Model', 'Default for high-quality, user-facing responses.', null,
+        'output', // --- CORRECTED --- Was 'output_client'
+        'Default Output Model', 'Default for high-quality, user-facing responses.', null,
         settings.default_output_llm_server,
         settings.default_output_llm_model,
         settings.default_output_llm_context_window,
@@ -583,21 +674,21 @@ export async function renderGlobalSettingsForm(settings, eventHandlers) {
 
     const mcpFieldset = document.createElement('fieldset');
     mcpFieldset.innerHTML = `
-        <legend>MCP Tool Servers</legend>
-        <div id="mcp-servers-list-container">Loading servers...</div>
-        <button type="button" id="add-mcp-server-btn" class="primary-button" style="margin-top: 1rem;">Register New MCP Server</button>
-    `;
+            <legend>MCP Tool Servers</legend>
+            <div id="mcp-servers-list-container">Loading servers...</div>
+            <button type="button" id="add-mcp-server-btn" class="primary-button" style="margin-top: 1rem;">Register New MCP Server</button>
+        `;
     form.appendChild(mcpFieldset);
 
     const promptsFieldset = document.createElement('fieldset');
     promptsFieldset.innerHTML = `
-        <legend>Default System Prompts</legend>
-        <div class="form-label-group"><label for="context-header-default-prompt">Default Context Prompt</label><button type="button" id="reset-context-prompt-btn" class="secondary-button small-button">Reset</button></div>
-        <textarea id="context-header-default-prompt" name="context_header_default_prompt" rows="6">${settings.context_header_default_prompt || ''}</textarea>
-        <div class="form-label-group" style="margin-top: 1rem;"><label for="tools-system-prompt">Tools System Prompt</label><button type="button" id="reset-tools-prompt-btn" class="secondary-button small-button">Reset</button></div>
-        <p class="form-help">Instructions given to the LLM on how to call tools. Edit with caution.</p>
-        <textarea id="tools-system-prompt" name="tools_system_prompt" rows="8">${settings.tools_system_prompt || ''}</textarea>
-    `;
+            <legend>Default System Prompts</legend>
+            <div class="form-label-group"><label for="context-header-default-prompt">Default Context Prompt</label><button type="button" id="reset-context-prompt-btn" class="secondary-button small-button">Reset</button></div>
+            <textarea id="context-header-default-prompt" name="context_header_default_prompt" rows="6">${settings.context_header_default_prompt || ''}</textarea>
+            <div class="form-label-group" style="margin-top: 1rem;"><label for="tools-system-prompt">Tools System Prompt</label><button type="button" id="reset-tools-prompt-btn" class="secondary-button small-button">Reset</button></div>
+            <p class="form-help">Instructions given to the LLM on how to call tools. Edit with caution.</p>
+            <textarea id="tools-system-prompt" name="tools_system_prompt" rows="8">${settings.tools_system_prompt || ''}</textarea>
+        `;
     form.appendChild(promptsFieldset);
 
     const saveButton = document.createElement('button');
@@ -632,6 +723,8 @@ export async function renderGlobalSettingsForm(settings, eventHandlers) {
     form.addEventListener('submit', eventHandlers.saveGlobalSettings);
 }
 
+// ... (le reste du fichier reste inchangé)
+// --- OMITTED FOR BREVITY ---
 export function renderBotKnowledgeBaseView(bot, container, eventHandlers) {
     container.innerHTML = `
         <div class="user-kb-view">
@@ -792,6 +885,129 @@ export function renderFilesView(bot, container, uploadHandler) {
     `;
     loadAndRenderFiles(bot.id, uploadHandler.deleteFile);
     document.getElementById('upload-file-btn').addEventListener('click', () => showUploadModal(bot.id, uploadHandler.uploadFile));
+}
+
+// --- MODIFICATION START: Passing the full bot object ---
+async function loadAndRenderWorkflows(bot) {
+    const container = document.getElementById('workflows-list-container');
+    if (!container) return;
+    container.innerHTML = `<p>Loading workflows...</p>`;
+
+    try {
+        const workflows = await fetchWorkflowsForBot(bot.id);
+        // --- MODIFICATION END ---
+        if (workflows.length === 0) {
+            container.innerHTML = '<p>No workflows configured for this bot yet.</p>';
+            return;
+        }
+
+        const grid = document.createElement('div');
+        grid.className = 'workflows-grid';
+
+        workflows.forEach(workflow => {
+            const card = document.createElement('div');
+            card.className = 'workflow-card';
+            card.dataset.workflowId = workflow.id;
+
+            card.innerHTML = `
+                <div class="workflow-card-header">
+                    <h4>${workflow.name}</h4>
+                    <label class="switch" title="Enable/Disable Workflow">
+                        <input type="checkbox" class="workflow-enable-toggle" ${workflow.is_enabled ? 'checked' : ''}>
+                        <span class="slider round"></span>
+                    </label>
+                </div>
+                <p class="workflow-card-description">${workflow.description || 'No description provided.'}</p>
+                <div class="workflow-card-footer">
+                    <button class="secondary-button edit-workflow-btn">Edit</button>
+                    <button class="primary-button run-workflow-btn">Run Now</button>
+                    <button class="icon-btn delete-workflow-btn" title="Delete Workflow">🗑️</button>
+                </div>
+            `;
+            grid.appendChild(card);
+        });
+
+        container.innerHTML = '';
+        container.appendChild(grid);
+
+        // Attach event listeners
+        container.querySelectorAll('.run-workflow-btn').forEach(button => {
+            button.addEventListener('click', async (e) => {
+                const workflowId = e.target.closest('.workflow-card').dataset.workflowId;
+                showSpinner();
+                try {
+                    const result = await runWorkflow(workflowId);
+                    showToast(result.message || 'Workflow triggered successfully!', 'success');
+                } catch (error) {
+                    showToast(`Error: ${error.message}`, 'error');
+                } finally {
+                    hideSpinner();
+                }
+            });
+        });
+
+        container.querySelectorAll('.delete-workflow-btn').forEach(button => {
+            button.addEventListener('click', async (e) => {
+                const workflowId = e.target.closest('.workflow-card').dataset.workflowId;
+                if (confirm('Are you sure you want to delete this workflow? This action cannot be undone.')) {
+                    showSpinner();
+                    try {
+                        await deleteWorkflow(workflowId);
+                        showToast('Workflow deleted.', 'success');
+                        await loadAndRenderWorkflows(bot); // Refresh the list
+                    } catch (error) {
+                        showToast(`Error: ${error.message}`, 'error');
+                    } finally {
+                        hideSpinner();
+                    }
+                }
+            });
+        });
+
+        // --- MODIFICATION START: Implementing the 'Edit' button logic ---
+        container.querySelectorAll('.edit-workflow-btn').forEach(button => {
+            button.addEventListener('click', async (e) => {
+                const workflowId = e.target.closest('.workflow-card').dataset.workflowId;
+                showSpinner();
+                try {
+                    // We will need a new API function to fetch a single workflow's details
+                    const workflowData = await fetchWorkflow(workflowId);
+                    // The workflow editor modal will need to be updated to accept this data
+                    showWorkflowEditorModal(bot, () => { loadAndRenderWorkflows(bot); }, workflowData);
+                } catch (error) {
+                    showToast(`Error fetching workflow details: ${error.message}`, 'error');
+                } finally {
+                    hideSpinner();
+                }
+            });
+        });
+        // --- MODIFICATION END ---
+        container.querySelectorAll('.workflow-enable-toggle').forEach(toggle => {
+            toggle.addEventListener('click', (e) => {
+                e.preventDefault();
+                showToast('Editing workflow status is not yet implemented.', 'info');
+            });
+        });
+
+    } catch (error) {
+        container.innerHTML = `<p class="error">Error loading workflows: ${error.message}</p>`;
+    }
+}
+
+export async function renderBotWorkflowsView(bot, container) {
+    container.innerHTML = `
+        <div class="files-header">
+            <h3>Workflows for ${bot.name}</h3>
+            <button id="add-workflow-btn" class="primary-button">Add Workflow</button>
+        </div>
+        <div id="workflows-list-container">Loading workflows...</div>
+    `;
+    // --- MODIFICATION START: Passing the full bot object ---
+    loadAndRenderWorkflows(bot);
+    document.getElementById('add-workflow-btn').addEventListener('click', () => {
+        showWorkflowEditorModal(bot, () => { loadAndRenderWorkflows(bot); });
+    });
+    // --- MODIFICATION END ---
 }
 
 export async function loadAndRenderFiles(botId, deleteHandler) {

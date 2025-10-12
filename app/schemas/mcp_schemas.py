@@ -1,6 +1,6 @@
 # Fichier: app/schemas/mcp_schemas.py
-from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, Dict, Any, List
 import datetime
 
 # --- Base Schemas ---
@@ -32,6 +32,8 @@ class MCPServerUpdate(BaseModel):
     port: Optional[int] = None
     rpc_endpoint_path: Optional[str] = None
     enabled: Optional[bool] = None
+    # --- CORRECTION FINALE: Le champ manquant est ajouté ici ---
+    discovered_tools_schema: Optional[List[Dict[str, Any]]] = Field(None, description="Cached list of tool definitions (with input/output schemas) discovered from this MCP server.")
 
 class MCPServerInDB(MCPServerBase):
     """
@@ -40,8 +42,14 @@ class MCPServerInDB(MCPServerBase):
     """
     id: int
     created_at: datetime.datetime
-    # SOLUTION: Make updated_at optional to match the Bot schema's behavior.
     updated_at: Optional[datetime.datetime] = None
+    # This field is correctly defined here from our previous fix
+    discovered_tools_schema: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Cached list of tool definitions (with input/output schemas) discovered from this MCP server.")
+
+    @field_validator('discovered_tools_schema', mode='before')
+    def ensure_list_from_none(cls, v):
+        """If the value from the DB is None, convert it to an empty list."""
+        return v if v is not None else []
 
     class Config:
         from_attributes = True

@@ -1,8 +1,8 @@
-# /app/grobot_tools/time_tool/server.py
+# grobot_tools/time_tool/server.py
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 from datetime import datetime
 import pytz
 
@@ -18,8 +18,6 @@ class JsonRpcRequest(BaseModel):
     params: Optional[Dict[str, Any]] = None
     id: int
 
-# === MODIFICATION MAJEURE: Le paramètre est renommé de "timezone" à "location" ===
-# Cela rend la tâche de l'agent d'extraction beaucoup plus simple et directe.
 GET_CURRENT_TIME_TOOL = {
     "name": "get_current_time",
     "title": "Get Current Time",
@@ -33,22 +31,42 @@ GET_CURRENT_TIME_TOOL = {
                 "type": "string"
             }
         },
-        "required": [] # Le paramètre reste optionnel, la logique interne gérera les cas par défaut.
+        "required": []
+    },
+    "outputSchema": {
+        "type": "object",
+        "properties": {
+            "time": {
+                "type": "string",
+                "description": "The formatted time (HH:MM:SS)."
+            },
+            "timezone": {
+                "type": "string",
+                "description": "The full IANA timezone name (e.g., 'Europe/Paris')."
+            },
+            "iso_datetime": {
+                "type": "string",
+                "format": "date-time",
+                "description": "The full date and time in ISO 8601 format."
+            },
+            "human_readable_summary": {
+                "type": "string",
+                "description": "A natural language sentence describing the current time."
+            }
+        },
+        "required": ["time", "timezone", "iso_datetime", "human_readable_summary"]
     }
 }
 AVAILABLE_TOOLS = [GET_CURRENT_TIME_TOOL]
 
-# La logique interne gère toujours la conversion de location -> timezone
-async def handle_get_current_time(arguments: Dict, configuration: Dict) -> str:
-    # === MODIFICATION: On cherche "location" au lieu de "timezone" ===
+async def handle_get_current_time(arguments: Dict, configuration: Dict) -> Dict[str, str]:
     location_name = arguments.get("location") if arguments else None
     
-    # Logique de fallback hiérarchique
-    tz_name = "UTC" # Valeur par défaut finale
+    tz_name = "UTC"
     source = "server default"
 
     if location_name:
-        tz_name = location_name # On utilise la location comme base pour trouver la timezone
+        tz_name = location_name
         source = "user request"
     elif configuration and configuration.get("timezone"):
         tz_name = configuration["timezone"]
@@ -61,16 +79,23 @@ async def handle_get_current_time(arguments: Dict, configuration: Dict) -> str:
         tz_name_mapped = tz_map.get(tz_name.lower(), tz_name)
         tz = pytz.timezone(tz_name_mapped)
     except pytz.UnknownTimeZoneError:
-        # On retourne le nom original pour un message d'erreur plus clair
-        return f"I'm sorry, I don't recognize '{tz_name}' as a valid location or timezone."
+        # For errors, we can return a string which will be handled by the RPC endpoint.
+        raise ValueError(f"I'm sorry, I don't recognize '{tz_name}' as a valid location or timezone.")
 
     now = datetime.now(tz)
+    formatted_time = now.strftime(time_format)
     
     if source == "user request":
-        # On utilise le nom de la timezone résolue pour plus de précision
-        return f"The current time in {tz.zone} is {now.strftime(time_format)}."
+        summary = f"The current time in {tz.zone} is {formatted_time}."
     else:
-        return f"It is currently {now.strftime(time_format)} ({tz.zone})."
+        summary = f"It is currently {formatted_time} ({tz.zone})."
+    
+    return {
+        "time": formatted_time,
+        "timezone": str(tz.zone),
+        "iso_datetime": now.isoformat(),
+        "human_readable_summary": summary
+    }
 
 TOOL_HANDLERS = { "get_current_time": handle_get_current_time }
 
@@ -89,11 +114,21 @@ async def rpc_endpoint(request: JsonRpcRequest):
                 status_code=404
             )
         try:
-            result_text = await handler(tool_args, tool_config)
-            return JSONResponse(content={"jsonrpc": "2.0", "id": request.id, "result": {"content": [{"type": "text", "text": result_text}]}})
+            result_obj = await handler(tool_args, tool_config)
+            
+            # The handler now returns a dictionary. We use it to build a richer response.
+            response_payload = {
+                "jsonrpc": "2.0",
+                "id": request.id,
+                "result": {
+                    "structured_output": result_obj,
+                    "content": [{"type": "text", "text": result_obj.get("human_readable_summary", "Tool executed successfully.")}]
+                }
+            }
+            return JSONResponse(content=response_payload)
         except Exception as e:
             return JSONResponse(
-                content={"jsonrpc": "2.0", "id": request.id, "error": {"code": -32602, "message": f"Error executing tool '{tool_name}': {e}"}},
+                content={"jsonrpc": "2.0", "id": request.id, "error": {"code": -32602, "message": f"Error executing tool '{tool_name}': {str(e)}"}, "result": None},
                 status_code=500
             )
     else:

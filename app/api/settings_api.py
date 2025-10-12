@@ -1,4 +1,3 @@
-# Fichier: app/api/settings_api.py
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -11,9 +10,16 @@ import ollama
 from ollama import ResponseError
 
 from app.database.sql_session import get_db
-# NOTE: LLMModel is no longer directly imported as it's part of the settings_schema
-from app.schemas.settings_schema import GlobalSettings, GlobalSettingsUpdate, LLMModel
+from app.schemas.settings_schema import (
+    GlobalSettings, 
+    GlobalSettingsUpdate, 
+    LLMModel,
+    LLMEvaluationRun,
+    LLMEvaluationRunCreate,
+    LLMEvaluationRunResult
+)
 from app.database import crud_settings
+from app.worker.tasks import run_llm_evaluation
 
 router = APIRouter(
     prefix="/settings",
@@ -44,7 +50,6 @@ def patch_global_settings(
     """
     Updates the global settings of the application.
     """
-    # NEW: Log the received and parsed payload to see what the API is working with.
     logger.info(f">>> [API SAVE] Received settings update request. Payload: {settings_update.model_dump_json(by_alias=False, exclude_unset=True)}")
     try:
         updated_settings = crud_settings.save_global_settings(db=db, settings_update=settings_update)
@@ -106,3 +111,79 @@ async def get_ollama_models_list(
         detail_message = f"Could not connect to Ollama server at '{url_to_use}'. Please check the URL and ensure Ollama is running. Error: {str(e)}"
         logger.warning(detail_message)
         raise HTTPException(status_code=500, detail=detail_message)
+
+
+@router.post(
+    "/llm/evaluate",
+    response_model=LLMEvaluationRun,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["Application Settings"]
+)
+async def start_llm_evaluation(
+    evaluation_request: LLMEvaluationRunCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Starts a background task to evaluate an LLM's performance.
+    """
+    logger.info(f"Received request to evaluate LLM: {evaluation_request.llm_model_name} on server {evaluation_request.llm_server_url} with context window {evaluation_request.llm_context_window}")
+    
+    try:
+        # 1. Start the background Celery task
+        # --- CORRECTED ---
+        # The task expects a single dictionary argument named 'evaluation_request_data'.
+        task = run_llm_evaluation.delay(
+            evaluation_request_data=evaluation_request.model_dump()
+        )
+        logger.info(f"Celery task for LLM evaluation started with ID: {task.id}")
+        
+    except Exception as e:
+        logger.error(f"Failed to start Celery task for LLM evaluation: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not start the evaluation task. Please check the Celery worker and broker status."
+        )
+        
+    try:
+        # 2. Create the record in the database
+        db_run = crud_settings.create_llm_evaluation_run(
+            db=db,
+            evaluation_data=evaluation_request,
+            task_id=task.id
+        )
+        
+        logger.info(f"LLM evaluation run for task {task.id} saved to database.")
+        
+        return db_run
+        
+    except Exception as e:
+        logger.error(f"Failed to save LLM evaluation run to database for task {task.id}: {e}", exc_info=True)
+        # Here we might want to consider revoking the Celery task, but for now, we'll just report the error.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Evaluation task was started but failed to be saved to the database."
+        )
+
+
+@router.get(
+    "/llm/evaluations/{llm_category}",
+    response_model=List[LLMEvaluationRunResult],
+    tags=["Application Settings"]
+)
+def get_llm_evaluation_results(
+    llm_category: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieves the history of LLM evaluation runs for a specific category.
+    """
+    logger.info(f"Fetching evaluation results for category: {llm_category}")
+    try:
+        results = crud_settings.get_llm_evaluation_runs_by_category(db, llm_category)
+        return results
+    except Exception as e:
+        logger.error(f"Failed to retrieve evaluation results for category {llm_category}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred while fetching evaluation results."
+        )

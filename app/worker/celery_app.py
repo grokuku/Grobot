@@ -1,5 +1,6 @@
 import os
 from celery import Celery
+from celery.schedules import crontab
 
 # Récupérer l'URL du broker depuis les variables d'environnement
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL")
@@ -20,3 +21,14 @@ celery = Celery(
 # Cette ligne permet à Celery de découvrir automatiquement les tâches
 # que nous définirons plus tard dans `app/worker/tasks.py`.
 celery.autodiscover_tasks(['app.worker'])
+
+# --- NEW: Configuration for Celery Beat (Cron Jobs) ---
+celery.conf.beat_schedule = {
+    # The name of the schedule entry
+    'run-workflow-cron-scheduler-every-minute': {
+        # The task to run (using its full path)
+        'task': 'app.worker.tasks.schedule_cron_workflows',
+        # The schedule (runs every minute)
+        'schedule': crontab(),
+    },
+}

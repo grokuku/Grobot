@@ -21,12 +21,38 @@ class APIClient:
         self._base_url = base_url.rstrip('/')
         self._bot_id = bot_id
         self._client = httpx.AsyncClient(timeout=API_TIMEOUT)
+        self._bot_settings: Optional[Dict[str, Any]] = None # Cache for bot settings
         logger.info(f"APIClient initialized for bot_id {self._bot_id} at {self._base_url}")
 
     async def close(self):
         """Closes the underlying HTTP client session."""
         await self._client.aclose()
     
+    async def get_bot_settings(self) -> Dict[str, Any]:
+        """
+        Fetches bot settings from the API and caches the result.
+        Returns an empty dict on failure.
+        """
+        if self._bot_settings is not None:
+            return self._bot_settings
+        
+        url = f"{self._base_url}/api/bots/{self._bot_id}"
+        logger.info(f"Fetching settings for bot {self._bot_id} for the first time.")
+        try:
+            response = await self._client.get(url, timeout=10.0)
+            response.raise_for_status()
+            self._bot_settings = response.json()
+            return self._bot_settings
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Failed to get bot settings, status {e.response.status_code}: {e.response.text}")
+            return {}
+        except (httpx.RequestError, json.JSONDecodeError) as e:
+            logger.error(f"An error occurred while requesting bot settings: {e}")
+            return {}
+        except Exception as e:
+            logger.error(f"An unexpected error occurred in get_bot_settings: {e}", exc_info=True)
+            return {}
+
     async def get_tool_definitions(self) -> List[Dict[str, Any]]:
         """
         Fetches all tool definitions for the bot from the backend API.

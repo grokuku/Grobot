@@ -62,6 +62,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./data/files_data:/app/files
+      - ./logs:/app/logs
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -84,8 +85,34 @@ services:
     command: celery -A app.worker.celery_app worker --loglevel=info
     volumes:
       - ./app:/app/app
+      - ./logs:/app/logs
     env_file:
       - ./.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_started
+    networks:
+      - grobot_net
+    restart: unless-stopped
+
+  # --- Service de Planification des Tâches (Celery Beat) ---
+  celery-beat:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    container_name: grobot_celery_beat
+    command: celery -A app.worker.celery_app beat --loglevel=info
+    volumes:
+      - ./app:/app/app
+      - ./logs:/app/logs
+    env_file:
+      - ./.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       redis:
         condition: service_healthy

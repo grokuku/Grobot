@@ -1,4 +1,5 @@
-// frontend/src/api.js
+// FICHIER: frontend/src/api.js
+
 const API_BASE_URL = '/api';
 
 /**
@@ -433,4 +434,168 @@ export async function deleteUserNote(noteId) {
         throw new Error(errorData.detail || 'Failed to delete user note');
     }
     return response;
+}
+
+// --- WORKFLOWS ---
+/**
+ * Fetches all workflows for a specific bot.
+ * @param {number} botId The ID of the bot.
+ * @returns {Promise<Array<object>>} A list of workflow objects.
+ */
+export async function fetchWorkflowsForBot(botId) {
+    const response = await fetchWithAuth(`${API_BASE_URL}/bots/${botId}/workflows`);
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to fetch workflows');
+    }
+    return await response.json();
+}
+
+/**
+ * Triggers a manual run of a specific workflow.
+ * @param {number} workflowId The ID of the workflow.
+ * @returns {Promise<object>} A confirmation message.
+ */
+export async function runWorkflow(workflowId) {
+    const response = await fetchWithAuth(`${API_BASE_URL}/workflows/${workflowId}/run`, {
+        method: 'POST',
+    });
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to run workflow');
+    }
+    return await response.json();
+}
+
+/**
+ * Deletes a specific workflow.
+ * @param {number} workflowId The ID of the workflow.
+ * @returns {Promise<Response>} The raw fetch response.
+ */
+export async function deleteWorkflow(workflowId) {
+    const response = await fetchWithAuth(`${API_BASE_URL}/workflows/${workflowId}`, {
+        method: 'DELETE',
+    });
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to delete workflow');
+    }
+    return response;
+}
+
+/**
+ * Creates a new workflow for a specific bot.
+ * @param {number} botId The ID of the bot.
+ * @param {object} workflowData The full workflow data object.
+ * @returns {Promise<object>} The created workflow object.
+ */
+export async function createWorkflow(botId, workflowData) {
+    const response = await fetchWithAuth(`${API_BASE_URL}/bots/${botId}/workflows`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(workflowData),
+    });
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to create workflow');
+    }
+    return await response.json();
+}
+
+/**
+ * Fetches all available tools for a bot's workflow, including internal ones.
+ * @param {number} botId The ID of the bot.
+ * @returns {Promise<Array<object>>} A list of tool definition objects.
+ */
+export async function fetchWorkflowTools(botId) {
+    const response = await fetchWithAuth(`${API_BASE_URL}/bots/${botId}/workflow-tools`);
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to fetch workflow tools');
+    }
+    return await response.json();
+}
+
+/**
+ * Fetches the list of Discord text channels for a specific bot.
+ * @param {number} botId The ID of the bot.
+ * @returns {Promise<Array<{id: string, name: string}>>} A list of channel objects.
+ */
+export async function fetchDiscordChannels(botId) {
+    const response = await fetchWithAuth(`${API_BASE_URL}/bots/${botId}/discord-channels`);
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to fetch Discord channels. The bot might be offline.');
+    }
+    return await response.json();
+}
+
+/**
+ * Fetches the details of a single workflow.
+ * @param {number} workflowId The ID of the workflow.
+ * @returns {Promise<object>} The full workflow object.
+ */
+export async function fetchWorkflow(workflowId) {
+    const response = await fetchWithAuth(`${API_BASE_URL}/workflows/${workflowId}`);
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to fetch workflow details');
+    }
+    return await response.json();
+}
+
+/**
+ * Updates an existing workflow.
+ * @param {number} workflowId The ID of the workflow to update.
+ * @param {object} workflowData The full, updated workflow data.
+ * @returns {Promise<object>} The updated workflow object.
+ */
+export async function updateWorkflow(workflowId, workflowData) {
+    const response = await fetchWithAuth(`${API_BASE_URL}/workflows/${workflowId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(workflowData),
+    });
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to update workflow');
+    }
+    return await response.json();
+}
+
+// --- LLM EVALUATION ---
+/**
+ * Starts a new LLM evaluation task.
+ * @param {object} evaluationData - The data for the evaluation run.
+ * @param {string} evaluationData.llm_category - The category to test.
+ * @param {string} evaluationData.llm_server_url - The server URL of the model.
+ * @param {string} evaluationData.llm_model_name - The name of the model.
+ * @param {number|null} evaluationData.llm_context_window - The context window to use.
+ * @returns {Promise<object>} - An object containing the task_id and status.
+ */
+export async function startLLMEvaluation(evaluationData) {
+    const response = await fetchWithAuth(`${API_BASE_URL}/settings/llm/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(evaluationData),
+    });
+    if (response.status !== 202) { // 202 Accepted
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to start LLM evaluation');
+    }
+    return await response.json();
+}
+
+/**
+ * Fetches the history of LLM evaluation runs for a specific category.
+ * @param {string} llmCategory - The category to fetch results for (e.g., 'decisional').
+ * @returns {Promise<Array<object>>} - A list of evaluation run result objects.
+ */
+export async function fetchLLMEvaluationResults(llmCategory) {
+    const response = await fetchWithAuth(`${API_BASE_URL}/settings/llm/evaluations/${llmCategory}`);
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to fetch LLM evaluation results');
+    }
+    return await response.json();
 }

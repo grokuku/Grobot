@@ -1,12 +1,16 @@
+####
+# FICHIER: app/main.py
+####
 import logging
+import json # <-- ADDED
 from contextlib import asynccontextmanager
+import asyncio 
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect # <-- MODIFIED
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-# === MODIFICATION START: Import tools_api ===
 from app.api import (
     bots_api,
     chat_api,
@@ -15,11 +19,12 @@ from app.api import (
     mcp_api,
     settings_api,
     user_profiles_api,
-    tools_api
+    tools_api,
+    workflows_api
 )
-# === MODIFICATION END ===
+from app.api.mcp_api import background_discovery_task
+from app.core.websocket_manager import websocket_manager # <-- ADDED
 from app.database import sql_session
-# REMOVED: from app.core.llm import ollama_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,12 +35,9 @@ print("--- CHARGEMENT DE app/main.py (VERSION AVEC LIFESPAN ET INIT LLM) ---")
 async def lifespan(app: FastAPI):
     # --- Logique de Démarrage ---
     logger.info("Application startup...")
-    # REMOVED: The llm_manager is stateless and does not require initialization.
-    # db = next(sql_session.get_db())
-    # try:
-    #     await ollama_client.initialize_llm_client(db)
-    # finally:
-    #     db.close()
+    
+    logger.info("Starting background task for MCP tool discovery...")
+    asyncio.create_task(background_discovery_task())
     
     yield
     
@@ -61,6 +63,29 @@ async def log_requests(request: Request, call_next):
     return response
 
 
+# --- WebSocket Endpoint ---
+@app.websocket("/ws/bots/{bot_id}")
+async def websocket_endpoint(websocket: WebSocket, bot_id: int):
+    await websocket_manager.connect(bot_id, websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            logger.info(f"Received WebSocket message from bot {bot_id}: {data}")
+
+            # Check if this message is a response to a pending request
+            if "request_id" in data and "response" in data:
+                websocket_manager.resolve_request(data["request_id"], data["response"])
+            else:
+                # Handle other types of incoming messages if needed in the future
+                logger.warning(f"Unhandled WebSocket message from bot {bot_id}: {data}")
+
+    except WebSocketDisconnect:
+        websocket_manager.disconnect(bot_id)
+    except Exception as e:
+        logger.error(f"Error in WebSocket for bot {bot_id}: {e}", exc_info=True)
+        websocket_manager.disconnect(bot_id)
+
+
 # --- API Routers ---
 app.include_router(bots_api.router, prefix="/api", tags=["bots"])
 app.include_router(chat_api.router, prefix="/api/chat", tags=["chat"])
@@ -69,9 +94,8 @@ app.include_router(files_api.router, prefix="/api", tags=["files"])
 app.include_router(mcp_api.router, prefix="/api", tags=["mcp"])
 app.include_router(settings_api.router, prefix="/api", tags=["settings"])
 app.include_router(user_profiles_api.router, prefix="/api", tags=["user_profiles"])
-# === MODIFICATION START: Include the tools router ===
 app.include_router(tools_api.router, prefix="/api", tags=["tools"])
-# === MODIFICATION END ===
+app.include_router(workflows_api.router, prefix="/api", tags=["workflows"])
 
 
 # --- Static Files ---

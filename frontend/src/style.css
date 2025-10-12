@@ -455,7 +455,7 @@ input:checked+.slider:before {
 }
 
 .primary-button,
-.secondary-btn,
+.secondary-button,
 .danger-button {
     padding: var(--spacing-sm) var(--spacing-md);
     border-radius: var(--radius-md);
@@ -489,6 +489,15 @@ input:checked+.slider:before {
     box-shadow: none;
 }
 
+.secondary-button {
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+}
+
+.secondary-button:hover {
+    background-color: var(--border-color);
+}
 
 /* ===== BOUTONS D'ICÔNES ===== */
 .icon-btn {
@@ -702,23 +711,21 @@ input:checked+.slider:before {
     flex-grow: 1;
     overflow-y: auto;
     padding-right: var(--spacing-sm);
-    /* Espace pour la scrollbar */
     margin-right: calc(-1 * var(--spacing-sm));
-    /* Compense le padding */
-}
-
-/* AJOUT DE LA REGLE CRUCIALE POUR LE FORMULAIRE */
-#mcp-config-form {
-    display: flex;
-    flex-direction: column;
-    flex-grow: 1;
-    /* Empêche le formulaire de déborder à cause de son contenu, 
-        permettant au .modal-body de gérer le scroll */
     min-height: 0;
+    /* CRITICAL FOR FLEXBOX SCROLLING */
 }
 
 .modal-content.large {
     max-width: 900px;
+}
+
+.modal-content .bot-settings-form {
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+    min-height: 0;
+    /* CRITICAL FOR FLEXBOX SCROLLING */
 }
 
 .close-button {
@@ -809,15 +816,10 @@ input:checked+.slider:before {
 /* ===== MEMORY VIEW ===== */
 .memory-table .memory-document-cell {
     white-space: pre-wrap;
-    /* Allows line breaks */
     word-break: break-word;
-    /* Breaks long words */
     max-width: 50vw;
-    /* Adjust as needed */
     max-height: 200px;
-    /* Limits the height */
     overflow-y: auto;
-    /* Adds a scrollbar if content exceeds max-height */
 }
 
 .memory-table .memory-metadata-cell {
@@ -827,7 +829,6 @@ input:checked+.slider:before {
 
 .memory-table .actions-cell {
     width: 1%;
-    /* Make the column as small as possible */
     white-space: nowrap;
 }
 
@@ -864,7 +865,6 @@ input:checked+.slider:before {
 
 .user-notes-table td,
 .user-notes-table th {
-    /* Prevent long notes from stretching the table */
     white-space: normal;
     word-break: break-word;
 }
@@ -899,6 +899,123 @@ input:checked+.slider:before {
     font-size: 0.85rem;
     color: var(--text-secondary);
     margin-top: var(--spacing-xs);
+}
+
+/* ===== WORKFLOWS VIEW ===== */
+.workflows-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: var(--spacing-lg);
+}
+
+.workflow-card {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+    box-shadow: var(--shadow-sm);
+    transition: all var(--transition-fast);
+}
+
+.workflow-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+    border-color: var(--accent-color);
+}
+
+.workflow-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: var(--spacing-sm);
+}
+
+.workflow-card-header h4 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.workflow-card-description {
+    flex-grow: 1;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    min-height: 40px;
+}
+
+.workflow-card-footer {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding-top: var(--spacing-sm);
+    border-top: 1px solid var(--border-color);
+}
+
+/* ===== WORKFLOW EDITOR MODAL ===== */
+.workflow-step-card {
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-md);
+    margin-top: var(--spacing-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+}
+
+.workflow-step-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing-md);
+    padding-bottom: var(--spacing-sm);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.workflow-step-header h4 {
+    margin: 0;
+    color: var(--accent-color);
+}
+
+.tool-parameters-container {
+    padding-top: var(--spacing-md);
+    margin-top: var(--spacing-md);
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+}
+
+.link-param-btn.active {
+    color: var(--accent-color);
+}
+
+.form-field-container {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+}
+
+.form-field-container .input-wrapper {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+}
+
+.form-field-container .input-wrapper input,
+.form-field-container .input-wrapper select {
+    flex-grow: 1;
+}
+
+.form-field-container .link-param-btn {
+    flex-shrink: 0;
 }
 
 /* ===== RESPONSIVE DESIGN ===== */

@@ -458,6 +458,59 @@ export async function handleDeleteUserNote(noteId) {
     }
 }
 
+// --- NEW: LLM Evaluation Event Handler ---
+/**
+ * Handles the click on an "Evaluate" button for an LLM configuration.
+ * @param {Event} event - The click event.
+ */
+async function handleEvaluateLlm(event) {
+    const button = event.target;
+    // --- MODIFICATION START ---
+    const { category, serverFieldId, modelFieldId, contextFieldId } = button.dataset;
+
+    const serverInput = document.getElementById(serverFieldId);
+    const modelSelect = document.getElementById(modelFieldId);
+    const contextInput = document.getElementById(contextFieldId);
+
+    if (!serverInput || !modelSelect || !contextInput) {
+        console.error("Could not find server, model, or context input fields for evaluation.");
+        ui.showToast("UI error: could not find configuration fields.", "error");
+        return;
+    }
+
+    const serverUrl = serverInput.value;
+    const modelName = modelSelect.value;
+    const contextWindow = contextInput.value ? parseInt(contextInput.value, 10) : null;
+    // --- MODIFICATION END ---
+
+    if (!serverUrl || !modelName) {
+        ui.showToast("Please select a server URL and a model name before evaluating.", "warning");
+        return;
+    }
+
+    ui.showSpinner();
+    try {
+        // --- MODIFICATION START ---
+        const evaluationData = {
+            llm_category: category,
+            llm_server_url: serverUrl,
+            llm_model_name: modelName,
+            llm_context_window: contextWindow,
+        };
+        // --- MODIFICATION END ---
+
+        const result = await api.startLLMEvaluation(evaluationData);
+        ui.showToast(`Evaluation for model '${modelName}' started. Task ID: ${result.task_id}`, 'info');
+        // Here we could potentially open a new view to monitor the task progress.
+
+    } catch (error) {
+        ui.showToast(`Error starting evaluation: ${error.message}`, 'error');
+        console.error("Evaluation start error:", error);
+    } finally {
+        ui.hideSpinner();
+    }
+}
+
 
 // --- EVENT HANDLER GETTERS ---
 
@@ -471,7 +524,9 @@ export function getGlobalSettingsEventHandlers() {
     return {
         saveGlobalSettings: handleSaveGlobalSettings,
         saveMcpServer: handleSaveMcpServer,
-        deleteMcpServer: handleDeleteMcpServer
+        deleteMcpServer: handleDeleteMcpServer,
+        // NEW: Add the evaluation handler
+        evaluateLlm: handleEvaluateLlm
     };
 }
 
@@ -488,7 +543,9 @@ export function getBotViewEventHandlers() {
             searchUser: handleUserSearch,
             saveProfile: handleSaveUserProfile,
             deleteNote: handleDeleteUserNote
-        }
+        },
+        // NEW: Add the evaluation handler
+        evaluateLlm: handleEvaluateLlm
     };
 }
 

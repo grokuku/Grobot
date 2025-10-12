@@ -1,5 +1,3 @@
-# app/schemas/settings_schema.py
-
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 from datetime import datetime
@@ -55,3 +53,44 @@ class GlobalSettings(GlobalSettingsBase):
     id: int
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+# --- Schemas for LLM Evaluation ---
+
+class LLMEvaluationRunCreate(BaseModel):
+    """Schema for creating a new LLM evaluation run."""
+    llm_category: str = Field(..., description="The category to evaluate (e.g., 'decisional').")
+    llm_server_url: str = Field(..., description="The server URL of the model to evaluate.")
+    llm_model_name: str = Field(..., description="The name of the model to evaluate.")
+    llm_context_window: Optional[int] = Field(None, gt=0, description="The context window size to use for this evaluation.")
+
+
+class LLMEvaluationRun(BaseModel):
+    """Schema for representing an LLM evaluation run task after creation."""
+    task_id: str = Field(..., description="The Celery task ID for this evaluation run.")
+    status: str = Field(..., description="The current status of the task (e.g., PENDING).")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LLMEvaluationRunResult(BaseModel):
+    """Schema for returning the results of a single LLM evaluation run."""
+    id: int
+    task_id: str
+    status: str
+    
+    # --- NEW: Add model name and context window for display ---
+    llm_model_name: str
+    llm_context_window: Optional[int] = None
+    
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    
+    summary_reliability_score: Optional[float] = None
+    summary_avg_response_ms: Optional[float] = None
+    summary_avg_tokens_per_second: Optional[float] = None
+    
+    error_message: Optional[str] = None
+    
+    model_config = ConfigDict(from_attributes=True)

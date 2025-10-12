@@ -1,6 +1,11 @@
-# app/core/llm_manager.py
+####
+# FILE: app/core/llm_manager.py
+####
 import logging
-from typing import List, Dict, Any, AsyncGenerator
+import os
+import threading
+from datetime import datetime
+from typing import List, Dict, Any, AsyncGenerator, Union
 
 import ollama
 from ollama import ResponseError
@@ -11,6 +16,77 @@ from app.core.agents import prompts
 from app.database.sql_models import Bot, GlobalSettings
 
 logger = logging.getLogger(__name__)
+
+# --- LLM Interaction Logging Setup ---
+LOG_DIR = "/app/logs"
+LOG_FILE = os.path.join(LOG_DIR, "llm_interactions.md")
+log_lock = threading.Lock()
+
+# Ensure the log directory exists
+os.makedirs(LOG_DIR, exist_ok=True)
+
+def log_llm_interaction(config: 'LLMConfig', system_prompt: str, messages: List[Dict[str, Any]], response: Union[str, Dict[str, Any]], json_mode: bool):
+    """
+    Logs the complete LLM interaction to a Markdown file.
+    """
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Combine system prompt and user messages for the final prompt
+        full_prompt_content = system_prompt
+        for message in messages:
+            # CORRECTED: Handle both dict and potential Pydantic object for robustness
+            if isinstance(message, dict):
+                role = message.get("role", "unknown")
+                name = message.get("name")
+                content = message.get("content", "")
+            else: # Assuming Pydantic model or object with attributes
+                role = getattr(message, "role", "unknown")
+                name = getattr(message, "name", None)
+                content = getattr(message, "content", "")
+
+            role_header = role.upper()
+            if name:
+                role_header += f" ({name})"
+            
+            full_prompt_content += f"\n\n--- {role_header} ---\n{content}"
+        
+        # CORRECTED: Properly extract the response content
+        response_content = ""
+        if isinstance(response, dict):
+            # This case is for non-streaming responses from client.chat()
+            response_content = response.get('message', {}).get('content', str(response))
+        elif isinstance(response, str):
+            # This case is for the full response from a stream
+            response_content = response
+        else:
+            # Fallback for unexpected types
+            response_content = str(response)
+
+        log_entry = f"""---
+
+**Timestamp:** {timestamp}  
+**Model:** `{config.model_name}`  
+**JSON Mode:** `{'Yes' if json_mode else 'No'}`
+**Context Window:** `{config.context_window}`
+
+#### PROMPT
+
+{full_prompt_content.strip()}
+
+#### RESPONSE
+
+{response_content.strip()}
+
+---
+"""
+
+        with log_lock:
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(log_entry)
+
+    except Exception as e:
+        logger.error(f"Failed to write to LLM interaction log: {e}", exc_info=True)
 
 # --- Constants for LLM Categories ---
 LLM_CATEGORY_DECISIONAL = "decisional"
@@ -71,20 +147,29 @@ async def call_llm(
     """
     Makes a specific, on-demand call to an Ollama server using the provided configuration.
     """
-    logger.info(f"Calling LLM: Server='{config.server_url}', Model='{config.model_name}', JSON_Mode={json_mode}")
+    logger.info(f"Calling LLM: Server='{config.server_url}', Model='{config.model_name}', Ctx='{config.context_window}', JSON_Mode={json_mode}")
     try:
         client = ollama.AsyncClient(host=config.server_url)
         
-        full_messages = [{"role": "system", "content": system_prompt}] + messages
+        # The ollama client expects a list of dicts, not Pydantic models
+        dict_messages = [msg.model_dump() if isinstance(msg, BaseModel) else msg for msg in messages]
+        full_messages = [{"role": "system", "content": system_prompt}] + dict_messages
         
         request_params = {
             "model": config.model_name,
             "messages": full_messages,
+            "options": {
+                "num_ctx": config.context_window
+            }
         }
         if json_mode:
             request_params["format"] = "json"
 
         response = await client.chat(**request_params)
+        
+        # Log the interaction
+        log_llm_interaction(config, system_prompt, messages, response, json_mode)
+        
         return response['message']['content']
         
     except ResponseError as e:
@@ -94,7 +179,6 @@ async def call_llm(
         logger.error(f"Failed to connect to Ollama server at '{config.server_url}': {e}", exc_info=True)
         raise
 
-# NEW: Added function for streaming responses
 async def call_llm_stream(
     config: LLMConfig,
     system_prompt: str,
@@ -103,23 +187,38 @@ async def call_llm_stream(
     """
     Makes a specific, on-demand streaming call to an Ollama server.
     """
-    logger.info(f"Calling LLM Stream: Server='{config.server_url}', Model='{config.model_name}'")
+    logger.info(f"Calling LLM Stream: Server='{config.server_url}', Model='{config.model_name}', Ctx='{config.context_window}'")
+    full_response_content = ""
     try:
         client = ollama.AsyncClient(host=config.server_url)
         
-        full_messages = [{"role": "system", "content": system_prompt}] + messages
+        # The ollama client expects a list of dicts, not Pydantic models
+        dict_messages = [msg.model_dump() if isinstance(msg, BaseModel) else msg for msg in messages]
+        full_messages = [{"role": "system", "content": system_prompt}] + dict_messages
         
         request_params = {
             "model": config.model_name,
             "messages": full_messages,
+            "options": {
+                "num_ctx": config.context_window
+            }
         }
 
         async for chunk in await client.chat(**request_params, stream=True):
-            yield chunk['message']['content']
+            chunk_content = chunk['message']['content']
+            full_response_content += chunk_content
+            yield chunk_content
 
     except ResponseError as e:
         logger.error(f"Ollama API error during stream from '{config.server_url}': {e.status_code} - {e.error}")
-        yield f"\n\n_An error occurred with the AI model: {e.error}_"
+        error_message = f"\n\n_An error occurred with the AI model: {e.error}_"
+        full_response_content += error_message
+        yield error_message
     except Exception as e:
         logger.error(f"Failed to connect to Ollama server for stream at '{config.server_url}': {e}", exc_info=True)
-        yield "\n\n_An unexpected error occurred while generating the response._"
+        error_message = "\n\n_An unexpected error occurred while generating the response._"
+        full_response_content += error_message
+        yield error_message
+    finally:
+        # Log the full interaction after the stream is complete
+        log_llm_interaction(config, system_prompt, messages, full_response_content, json_mode=False)

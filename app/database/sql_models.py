@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, String, JSON, DateTime, ForeignKey, Text, Boolean,
-    BigInteger, UniqueConstraint, CheckConstraint
+    BigInteger, UniqueConstraint, CheckConstraint, Float
 )
 from sqlalchemy.orm import relationship, backref
 from sqlalchemy.sql import func
@@ -136,6 +136,8 @@ class Bot(Base):
         back_populates="bot",
         cascade="all, delete-orphan"
     )
+    
+    workflows = relationship("Workflow", back_populates="bot", cascade="all, delete-orphan")
 
     mcp_servers = association_proxy(
         "mcp_server_associations", "mcp_server"
@@ -232,6 +234,8 @@ class MCPServer(Base):
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    workflow_steps = relationship("WorkflowStep", back_populates="mcp_server")
 
     bot_associations = relationship(
         "BotMCPServerAssociation",
@@ -241,4 +245,112 @@ class MCPServer(Base):
 
     bots = association_proxy(
         "bot_associations", "bot"
+    )
+    # --- MODIFICATION START ---
+    # Stores the list of tools (each with input/output schemas) discovered from this MCP server.
+    discovered_tools_schema = Column(JSON, nullable=True, default=list) 
+    # --- MODIFICATION END ---
+
+
+class Workflow(Base):
+    """
+    Represents an automated sequence of actions (workflow) for a bot.
+    """
+    __tablename__ = "workflows"
+
+    id = Column(Integer, primary_key=True)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False, index=True)
+    name = Column(String, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    is_enabled = Column(Boolean, default=True, nullable=False, index=True)
+
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    bot = relationship("Bot", back_populates="workflows")
+    trigger = relationship("Trigger", back_populates="workflow", cascade="all, delete-orphan", uselist=False)
+    steps = relationship("WorkflowStep", back_populates="workflow", cascade="all, delete-orphan", order_by="WorkflowStep.step_order")
+
+
+class Trigger(Base):
+    """
+    Defines the trigger for a workflow, e.g., a CRON schedule.
+    """
+    __tablename__ = "triggers"
+
+    id = Column(Integer, primary_key=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False, unique=True, index=True)
+    trigger_type = Column(String, nullable=False, default="cron", index=True)
+    config = Column(postgresql.JSONB, nullable=False, server_default='{}')
+
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    workflow = relationship("Workflow", back_populates="trigger")
+
+
+class WorkflowStep(Base):
+    """
+    Represents a single step in a workflow, typically a tool call.
+    """
+    __tablename__ = "workflow_steps"
+
+    id = Column(Integer, primary_key=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False, index=True)
+    
+    # --- MODIFICATION START ---
+    # mcp_server_id can now be NULL for internal tools that are not on an MCP server.
+    mcp_server_id = Column(Integer, ForeignKey("mcp_servers.id"), nullable=True, index=True)
+    # --- MODIFICATION END ---
+    
+    step_order = Column(Integer, nullable=False)
+    tool_name = Column(String, nullable=False)
+    parameter_mappings = Column(postgresql.JSONB, nullable=False, server_default='{}')
+
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    workflow = relationship("Workflow", back_populates="steps")
+    mcp_server = relationship("MCPServer", back_populates="workflow_steps")
+
+    __table_args__ = (
+        UniqueConstraint('workflow_id', 'step_order', name='_workflow_step_order_uc'),
+    )
+
+
+# NEW: Table for LLM Evaluation Runs
+class LLMEvaluationRun(Base):
+    """
+    Stores the results and metadata for a single LLM evaluation run.
+    """
+    __tablename__ = "llm_evaluation_runs"
+
+    id = Column(Integer, primary_key=True)
+
+    # --- Task & Status ---
+    task_id = Column(String, unique=True, nullable=False, index=True, comment="The Celery task ID for this run.")
+    status = Column(String, nullable=False, default='PENDING', index=True, comment="The current status of the evaluation (e.g., PENDING, RUNNING, COMPLETED, FAILED).")
+
+    # --- Input Configuration ---
+    llm_category = Column(String, nullable=False, index=True, comment="The category of the LLM task being evaluated (e.g., decisional, tools, output_client).")
+    llm_server_url = Column(String, nullable=False, comment="The URL of the LLM server used for the evaluation.")
+    llm_model_name = Column(String, nullable=False, index=True, comment="The name of the model being evaluated.")
+    llm_context_window = Column(Integer, nullable=True, comment="The context window size used for this evaluation run.")
+
+    # --- Timestamps ---
+    created_at = Column(DateTime, server_default=func.now())
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    # --- High-level Summary Results ---
+    summary_reliability_score = Column(Float, nullable=True, comment="Overall reliability score (e.g., percentage of passed tests).")
+    summary_avg_response_ms = Column(Float, nullable=True, comment="Average response time in milliseconds across all tests.")
+    summary_avg_tokens_per_second = Column(Float, nullable=True, comment="Average tokens per second, mainly for generative tasks.")
+
+    # --- Detailed Data & Errors ---
+    results_data = Column(postgresql.JSONB, nullable=True, comment="A JSON object containing detailed results for each individual test case.")
+    error_message = Column(Text, nullable=True, comment="Stores any terminal error message if the entire run fails.")
+
+    __table_args__ = (
+        CheckConstraint(status.in_(['PENDING', 'RUNNING', 'COMPLETED', 'FAILED']), name='llm_evaluation_run_status_check'),
     )

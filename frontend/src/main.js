@@ -196,6 +196,25 @@ function attachShellEventListeners() {
             document.body.style.userSelect = 'none';
         });
     }
+
+    // NEW: Event delegation for dynamically created "Evaluate" buttons.
+    const mainContent = document.getElementById('main-content');
+    if (mainContent) {
+        mainContent.addEventListener('click', (event) => {
+            const evaluateBtn = event.target.closest('.evaluate-llm-btn');
+            if (evaluateBtn) {
+                // Determine the correct context (global or bot-specific)
+                const isGlobalSettings = !!event.target.closest('#global-settings-form');
+                const handlers = isGlobalSettings
+                    ? events.getGlobalSettingsEventHandlers()
+                    : events.getBotViewEventHandlers();
+
+                if (handlers.evaluateLlm) {
+                    handlers.evaluateLlm(event);
+                }
+            }
+        });
+    }
 }
 
 // --- APP START ---

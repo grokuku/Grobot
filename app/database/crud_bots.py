@@ -1,5 +1,6 @@
-# app/database/crud_bots.py
-
+####
+# FICHIER: app/database/crud_bots.py
+####
 import time
 from typing import List
 from sqlalchemy.orm import Session, joinedload
@@ -19,10 +20,20 @@ def get_bot(db: Session, bot_id: int) -> Bot | None:
     if not db_bot:
         return None
 
+    # This logic is for the frontend to easily access the bot-specific config
     for association in db_bot.mcp_server_associations:
         association.mcp_server.configuration = association.configuration
 
     return db_bot
+
+def get_bot_with_mcp_servers(db: Session, bot_id: int) -> Bot | None:
+    """
+    Retrieves a bot by its ID, specifically for internal use where we just need
+    the raw associated MCP server models without any dynamic attribute assignment.
+    """
+    return db.query(Bot).options(
+        joinedload(Bot.mcp_server_associations).joinedload(BotMCPServerAssociation.mcp_server)
+    ).filter(Bot.id == bot_id).first()
 
 def get_bot_by_name(db: Session, name: str) -> Bot | None:
     """
@@ -55,7 +66,6 @@ def create_bot(db: Session, bot: bot_schemas.BotCreate) -> Bot:
     if not token_to_use:
         token_to_use = f"PLACEHOLDER_TOKEN_{bot.name.replace(' ', '_')}_{int(time.time())}"
 
-    # MODIFIED: Expanded to include all new categorized LLM settings from the Pydantic schema.
     db_bot = Bot(
         name=bot.name,
         discord_token=token_to_use,
@@ -65,7 +75,6 @@ def create_bot(db: Session, bot: bot_schemas.BotCreate) -> Bot:
         gatekeeper_history_limit=bot.gatekeeper_history_limit,
         conversation_history_limit=bot.conversation_history_limit,
         
-        # Bot-specific LLM Overrides
         decisional_llm_server_url=bot.decisional_llm_server_url,
         decisional_llm_model=bot.decisional_llm_model,
         decisional_llm_context_window=bot.decisional_llm_context_window,
@@ -83,7 +92,6 @@ def create_bot(db: Session, bot: bot_schemas.BotCreate) -> Bot:
     db.add(db_bot)
     db.commit()
     db.refresh(db_bot)
-    # We call get_bot to ensure the returned object has all the relationships loaded correctly
     return get_bot(db, db_bot.id)
 
 def update_bot(db: Session, bot_id: int, bot_update: bot_schemas.BotUpdate) -> Bot | None:

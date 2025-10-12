@@ -1,4 +1,3 @@
-#### Fichier: discord_bot_launcher/client/event_handler.py
 import logging
 import asyncio
 import time
@@ -45,7 +44,11 @@ async def _fetch_history(message: discord.Message, limit: int = 10) -> List[Dict
             if not msg.content: continue
             role = "assistant" if msg.author.id == _bot_instance.user.id else "user"
             clean_content = await _replace_mentions(msg.content, msg)
-            history.append({"role": role, "content": clean_content})
+            message_data = {"role": role, "content": clean_content}
+            # Add the author's name for user messages
+            if role == "user":
+                message_data["name"] = msg.author.display_name
+            history.append(message_data)
     history.reverse()
     return history
 
@@ -78,22 +81,34 @@ async def on_message(message: discord.Message):
     if message.author.bot: return
     if message.type == discord.MessageType.chat_input_command: return
 
+    is_dm = isinstance(message.channel, discord.DMChannel)
+    is_direct_mention = (
+        is_dm or
+        _bot_instance.user.mentioned_in(message) or
+        (message.reference and isinstance(message.reference.resolved, discord.Message) and message.reference.resolved.author.id == _bot_instance.user.id)
+    )
+
+    # --- START OF MODIFICATION: Pre-filtering based on bot settings ---
+    bot_settings = await _api_client_instance.get_bot_settings()
+    passive_listening_enabled = bot_settings.get("passive_listening", True)
+
+    if not passive_listening_enabled and not is_direct_mention:
+        logger.debug(f"Ignoring message {message.id} because passive listening is disabled and it's not a direct mention.")
+        return
+    # --- END OF MODIFICATION ---
+
     await ui.add_thinking_reaction(message)
     
     try:
-        is_dm = isinstance(message.channel, discord.DMChannel)
-        
-        is_direct_mention = (
-            is_dm or
-            f'<@{_bot_instance.user.id}>' in message.content or
-            (message.reference and isinstance(message.reference.resolved, discord.Message) and message.reference.resolved.author.id == _bot_instance.user.id)
-        )
-        is_direct_mention = bool(is_direct_mention)
-
         clean_current_content = await _replace_mentions(message.content, message)
 
         history = await _fetch_history(message)
-        history.append({"role": "user", "content": clean_current_content})
+        # Add the current message with the author's name
+        history.append({
+            "role": "user",
+            "content": clean_current_content,
+            "name": message.author.display_name
+        })
         
         response = await _api_client_instance.process_message(
             user_id=str(message.author.id),
@@ -103,7 +118,7 @@ async def on_message(message: discord.Message):
             message_content=clean_current_content,
             history=history,
             is_direct_message=is_dm,
-            is_direct_mention=is_direct_mention
+            is_direct_mention=bool(is_direct_mention)
         )
 
         if not response:
@@ -277,26 +292,28 @@ async def _execute_and_process_tool_call(interaction: discord.Interaction, tool_
                 error_message = "Tool server returned a malformed error (see server logs for details)."
             raise Exception(f"Tool execution failed: {error_message}")
         
-        # --- START OF MODIFICATION: Handle prompt_generator output ---
+        # --- MODIFICATION START: Handle prompt_generator with structured JSON ---
         if tool_name == "generate_prompt":
             content_list = result.get("result", {}).get("content", [])
-            if not content_list or "text" not in content_list[0]:
-                raise Exception("Invalid response format from prompt generator.")
             
-            full_text = content_list[0]["text"]
-            
-            # Use regex to robustly extract prompts from within the code blocks
-            positive_match = re.search(r"\*\*Positive Prompt:\*\*\s*```\n?(.*?)\n?```", full_text, re.DOTALL)
-            negative_match = re.search(r"\*\*Negative Prompt:\*\*\s*```\n?(.*?)\n?```", full_text, re.DOTALL)
-            
-            positive_prompt = positive_match.group(1).strip() if positive_match else None
-            negative_prompt = negative_match.group(1).strip() if negative_match else None
+            # Find the 'json' content part
+            json_payload = None
+            for item in content_list:
+                if item.get("type") == "json" and isinstance(item.get("json"), dict):
+                    json_payload = item["json"]
+                    break
+
+            if not json_payload:
+                raise Exception("Invalid response format from prompt generator: 'json' content not found.")
+
+            positive_prompt = json_payload.get("positive_prompt")
+            negative_prompt = json_payload.get("negative_prompt")
 
             if not positive_prompt or not negative_prompt:
-                logger.error(f"Could not parse positive/negative prompts from response: {full_text}")
+                logger.error(f"Could not find positive/negative prompts in JSON payload: {json_payload}")
                 raise Exception("Could not parse the response from the prompt generator.")
             
-            # Send prompts in separate messages using the new helper function
+            # Send prompts in separate messages using the existing helper function
             await _send_prompt_part(
                 interaction,
                 header=f"<@{interaction.user.id}>, here is the **positive prompt**:",
@@ -312,7 +329,7 @@ async def _execute_and_process_tool_call(interaction: discord.Interaction, tool_
 
             if acknowledgement_message: await acknowledgement_message.delete()
             return
-        # --- END OF MODIFICATION ---
+        # --- MODIFICATION END ---
 
         content_list = result.get("result", {}).get("content", [])
         text_parts = [f"<@{interaction.user.id}>, here is the result for your request!"]
@@ -460,7 +477,7 @@ async def setup(bot: commands.Bot, api_client: APIClient):
             param_name = "render_style"
         return await _get_choices_for_tool_param(tool_name, param_name, current)
     async def render_type_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-        return await _get_choices_for_tool_param('generate_image', 'render_type', current)
+        return await _get_choices_for_tool_param('generate_image', 'render_type')
     
     @bot.tree.command(name="image", description="Generates an image using an AI model.")
     @app_commands.describe(prompt="A detailed description of the desired image.", enhance_prompt="Let the AI improve your prompt before generation.", seed="A specific seed to reproduce an image.")
