@@ -5,6 +5,9 @@ import asyncio
 import json
 from pydantic import BaseModel, Field
 
+# NEW: Add websockets for handling MCP streams
+import websockets
+
 from sqlalchemy.orm import Session
 
 # NEW: Import the LLM manager and prompts
@@ -132,6 +135,20 @@ async def process_user_message(
         logger.error(f"Failed to parse Planner response or plan is empty: {e}. Stopping. Raw: '{response_str}'")
         return StopResponse(reason="Failed to create an execution plan.")
 
+    # --- 4.5. Plan Validation Step (Internal Logic) ---
+    logger.info("Validating generated plan against identified tools...")
+    identified_tool_names_set = set(required_tool_names)
+    planned_tool_names = {step.tool_name for step in plan_result.plan}
+
+    # Check if all tools in the plan were actually identified as required.
+    if not planned_tool_names.issubset(identified_tool_names_set):
+        invalid_tools = planned_tool_names - identified_tool_names_set
+        error_msg = f"Planner hallucinated invalid tools: {list(invalid_tools)}. These were not identified in the initial step. Stopping execution."
+        logger.error(error_msg)
+        return StopResponse(reason="Internal error: Failed to execute the request due to an invalid processing plan.")
+    
+    logger.info("Plan validation successful.")
+
     # --- 5. Acknowledgement Step (Category: Output Client) ---
     logger.info("Plan created successfully. Generating acknowledgement message.")
     output_config = llm_manager.resolve_llm_config(bot, global_settings, llm_manager.LLM_CATEGORY_OUTPUT_CLIENT)
@@ -146,7 +163,7 @@ async def process_user_message(
         tool_definitions=required_tool_definitions
     )
 
-# --- Helper functions for tool discovery and execution (Unchanged) ---
+# --- Helper functions for tool discovery and execution ---
 
 async def get_available_tools_for_bot(db: Session, bot_id: int) -> List[Dict[str, Any]]:
     logger.info(f"Fetching available tools for bot_id: {bot_id}")
@@ -185,6 +202,36 @@ async def _fetch_tools_from_mcp(client: httpx.AsyncClient, server) -> tuple[int,
         logger.error(f"An unexpected error occurred fetching tools from {server_url}: {e}", exc_info=True)
         return server.id, None
 
+# --- MODIFICATION START: Using keepalive instead of global timeouts ---
+async def _handle_mcp_stream(websocket_url: str) -> Dict:
+    """
+    Connects to an MCP WebSocket stream with keepalive pings and waits for the final result.
+    """
+    try:
+        # Use keepalive ping/pong to ensure connection is alive without a hard global timeout.
+        async with websockets.connect(
+            websocket_url,
+            ping_interval=20, 
+            ping_timeout=20
+        ) as websocket:
+            async for message_str in websocket:
+                message_data = json.loads(message_str)
+                params = message_data.get("params", {})
+                # Check both chunk and end for a final result, similar to event_handler.py
+                if message_data.get("method") in ("stream/chunk", "stream/end"):
+                    if error_obj := params.get("error"):
+                        return {"error": {"message": error_obj.get("message", "Unknown stream error")}}
+                    elif result_obj := params.get("result"):
+                        # This is the final result, wrap it for consistency
+                        return {"result": result_obj}
+    except Exception as e:
+        logger.error(f"MCP stream connection error at {websocket_url}: {e}", exc_info=True)
+        return {"error": {"message": f"Failed to handle the tool stream: {e}"}}
+    # If the loop finishes without a result, it's an error
+    logger.warning(f"Tool stream at {websocket_url} ended without a result or error message.")
+    return {"error": {"message": "Tool stream ended without a result."}}
+# --- MODIFICATION END ---
+
 
 async def execute_tool_plan(
     db: Session, bot_id: int, plan_result: PlannerResult, tool_definitions: List[Dict[str, Any]]
@@ -195,7 +242,6 @@ async def execute_tool_plan(
 
     async with httpx.AsyncClient() as client:
         for step in sorted(plan_result.plan, key=lambda x: x.step):
-            # ... (rest of the function is unchanged as it calls tool servers, not LLMs)
             tool_name = step.tool_name
             logger.info(f"Executing step {step.step}: calling tool '{tool_name}'")
 
@@ -226,8 +272,21 @@ async def execute_tool_plan(
                 response = await client.post(server_url, json=payload, timeout=30.0)
                 response.raise_for_status()
                 json_response = response.json()
-                result = {"error": json_response["error"]} if "error" in json_response else json_response.get("result", {})
-                tool_execution_results.append({"tool_name": tool_name, "result": result})
+                
+                final_result = None
+                if "result" in json_response or "error" in json_response:
+                    logger.info(f"Tool '{tool_name}' returned a direct response.")
+                    final_result = {"error": json_response["error"]} if "error" in json_response else json_response.get("result", {})
+                elif json_response.get("method") == "stream/start" and (ws_url := json_response.get("params", {}).get("ws_url")):
+                    logger.info(f"Tool '{tool_name}' initiated a stream. Connecting to {ws_url}...")
+                    stream_response = await _handle_mcp_stream(ws_url)
+                    final_result = stream_response.get("result") or {"error": stream_response.get("error", {"message": "Unknown stream error"})}
+                else:
+                    logger.error(f"Tool '{tool_name}' returned an unknown response format: {json_response}")
+                    final_result = {"error": "Invalid response format from tool server."}
+
+                tool_execution_results.append({"tool_name": tool_name, "result": final_result})
+
             except Exception as e:
                 logger.error(f"Exception calling tool '{tool_name}': {e}", exc_info=True)
                 tool_execution_results.append({"tool_name": tool_name, "result": {"error": str(e)}})

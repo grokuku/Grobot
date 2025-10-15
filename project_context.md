@@ -1,4 +1,4 @@
-#### Date de dernière mise à jour : 2025-10-11
+#### Date de dernière mise à jour : 2025-10-12
     #### Ce fichier sert de référence unique et doit être fourni en intégralité au début de chaque session.
     
     ---
@@ -343,9 +343,10 @@
     
     ### 7.1. Bugs Connus et Régression (Issues Actuellement Ouvertes)
     
-    *   **Pré-remplissage Incomplet de l'Éditeur de Workflow en Mode Édition (`frontend/src/workflow_editor.js`)**
-        *   **Description :** Lors de l'édition d'un workflow existant (par exemple, un workflow avec 3 étapes), le modal de l'éditeur s'ouvre mais la dernière étape apparaît vide, ses paramètres n'étant pas chargés.
-        *   **Hypothèse/Investigation :** Une première tentative de correction a été effectuée en supposant une "race condition" dans le rendu asynchrone des étapes. Le remplacement d'une boucle `forEach` par une boucle `for...of` n'a pas résolu le problème. L'investigation doit se poursuivre pour identifier la cause de l'échec du rendu de la dernière étape.
+    *   **Échec de l'Exécution des Outils en Langage Naturel et Hallucination du Planificateur (`app/core/agent_orchestrator.py`, `app/core/agents/planner.py`)**
+        *   **Description :** Lorsqu'un utilisateur demande une action nécessitant un outil (ex: "fais moi une image de..."), l'exécution échoue systématiquement. Le bot répond d'abord "Working on it", puis un message d'erreur générique. Lors des tentatives suivantes, le bot répond de manière conversationnelle qu'il ne peut pas effectuer l'action (ex: "Je ne peux pas générer d'images, mais...").
+        *   **Investigation :** L'analyse des logs a révélé une cascade de défaillances critiques. La cause première est l'échec de l'agent `Parameter Extractor` à extraire les arguments de la requête de l'utilisateur, retournant un objet de paramètres vide. Le problème majeur survient ensuite : l'agent `Planner`, au lieu de s'arrêter, reçoit cet objet vide et **hallucine un plan d'exécution complètement invalide** en inventant des outils non pertinents (ex: `summarize_text`, `translate_text`). L'orchestrateur tente d'exécuter ce plan, échoue car les outils n'existent pas, et termine avec une liste de résultats vide. Finalement, le `Synthesizer`, ne voyant aucun résultat d'outil, conclut à tort qu'aucun outil n'était nécessaire et génère une réponse conversationnelle d'échec.
+        *   **Plan d'action :** La priorité est de blinder l'orchestrateur contre les plans hallucinés. Une validation doit être ajoutée dans `app/core/agent_orchestrator.py` : après l'étape du `Planner`, le code doit vérifier que chaque outil présent dans le plan généré correspond bien à un outil identifié par le `Tool Identifier` à l'étape précédente. Si un outil invalide est détecté, l'exécution doit être immédiatement stoppée avec une erreur interne claire, empêchant la cascade de défaillances. La fiabilisation du `Parameter Extractor` et du `Planner` eux-mêmes sera une étape ultérieure.
         *   **Statut :** NON RÉSOLU.
     
     *   **Timeout de la commande `/prompt_generator` et Échec de l'Autocomplétion des Styles (`app/api/tools_api.py`, `discord_bot_launcher/client/event_handler.py`)**
@@ -392,6 +393,11 @@
         *   **Statut :** IMPLÉMENTÉ.
     
     ### 7.3. Bugs Récemment Résolus
+    
+    *   **Échec de l'Exécution des Outils via Langage Naturel (Incompatibilité de Protocole)**
+        *   **Analyse :** Les outils lents (ex: `generate_image`) échouaient lorsqu'ils étaient appelés en langage naturel. L'investigation a montré que l'orchestrateur (`agent_orchestrator.py`) effectuait un appel HTTP synchrone et attendait une réponse directe. Cependant, le serveur d'outils répondait correctement avec un message `stream/start` pour initier une connexion WebSocket, ce que l'orchestrateur ne savait pas gérer.
+        *   **Résolution :** La fonction d'exécution des outils dans `app/core/agent_orchestrator.py` a été rendue "consciente du streaming". Elle est maintenant capable de détecter la réponse `stream/start`, d'extraire l'URL WebSocket et d'utiliser une nouvelle fonction helper (`_handle_mcp_stream`) pour se connecter au stream et attendre le résultat final. Le mécanisme de keepalive (ping/pong) a été ajouté pour garantir la robustesse de la connexion sans imposer de limite de temps arbitraire.
+        *   **Statut :** RÉSOLU (remplacé par un bug plus spécifique).
     
     *   **Échec de l'Exécution des Workflows avec Outils Asynchrones (Streaming)**
         *   **Analyse :** Les workflows utilisant des outils asynchrones (ex: `generate_image`) échouaient systématiquement. L'investigation a révélé une incompatibilité de protocole dans la tâche Celery `execute_workflow`. Le worker effectuait un appel HTTP synchrone et attendait une réponse directe, alors que le serveur d'outils (MCP) répondait avec un message `stream/start` pour initier une connexion WebSocket, conformément au standard pour les tâches longues. La logique du worker interprétait cette réponse de streaming valide comme une erreur, car elle ne contenait pas la clé `"result"` attendue, provoquant un `ValueError`.
@@ -442,8 +448,8 @@
     
     ### 7.5. Plan d'Action pour la Prochaine Session
     
-    *   **Tâche Prioritaire : Résoudre le bug de pré-remplissage de l'éditeur de workflow.**
-        *   **Description :** Maintenant que l'exécution des workflows est stable, nous pouvons nous concentrer sur le bug de l'interface utilisateur. Lors de l'édition d'un workflow, la dernière étape n'affiche pas ses paramètres. La prochaine session se concentrera sur le débogage de `frontend/src/workflow_editor.js` et des fichiers associés (`ui.js`, `api.js`) pour résoudre ce problème d'affichage.
+    *   **Tâche Prioritaire : Résoudre le bug d'hallucination du Planificateur.**
+        *   **Description :** La cause racine de l'échec de l'exécution des outils en langage naturel a été identifiée comme une hallucination de l'agent `Planner` lorsqu'il reçoit des paramètres vides. La prochaine session se concentrera sur le blindage de `app/core/agent_orchestrator.py` pour valider le plan généré et empêcher l'exécution de plans invalides.
     
     ---
     
