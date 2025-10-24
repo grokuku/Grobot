@@ -1,3 +1,4 @@
+# app/database/sql_models.py
 from sqlalchemy import (
     Column, Integer, String, JSON, DateTime, ForeignKey, Text, Boolean,
     BigInteger, UniqueConstraint, CheckConstraint, Float
@@ -130,6 +131,7 @@ class Bot(Base):
     # Relationships
     user_profiles = relationship("UserProfile", back_populates="bot", cascade="all, delete-orphan")
     uploaded_files = relationship("UploadedFile", back_populates="bot", cascade="all, delete-orphan")
+    channel_settings = relationship("ChannelSettings", back_populates="bot", cascade="all, delete-orphan")
 
     mcp_server_associations = relationship(
         "BotMCPServerAssociation",
@@ -141,6 +143,32 @@ class Bot(Base):
 
     mcp_servers = association_proxy(
         "mcp_server_associations", "mcp_server"
+    )
+
+
+# NEW MODEL for channel-specific settings
+class ChannelSettings(Base):
+    """
+    Stores bot-specific settings for a particular Discord channel.
+    """
+    __tablename__ = "channel_settings"
+
+    id = Column(Integer, primary_key=True)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False, index=True)
+    channel_id = Column(String, nullable=False, index=True)
+    
+    # Determines if the bot can operate in this channel at all. Overrides all other settings.
+    has_access = Column(Boolean, default=True, nullable=False)
+    # Determines if the bot should use the Gatekeeper to listen to non-mention messages.
+    passive_listening = Column(Boolean, default=True, nullable=False)
+
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+
+    bot = relationship("Bot", back_populates="channel_settings")
+
+    __table_args__ = (
+        UniqueConstraint('bot_id', 'channel_id', name='_bot_channel_uc'),
     )
 
 

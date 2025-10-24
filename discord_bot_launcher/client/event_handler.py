@@ -120,17 +120,31 @@ async def on_message(message: discord.Message):
         (message.reference and isinstance(message.reference.resolved, discord.Message) and message.reference.resolved.author.id == _bot_instance.user.id)
     )
 
-    # --- START OF MODIFICATION: Pre-filtering based on bot settings ---
+    # --- START OF MODIFICATION: Channel-specific permission checks ---
     bot_settings = await _api_client_instance.get_bot_settings()
-    passive_listening_enabled = bot_settings.get("passive_listening", True)
+    
+    channel_id_str = str(message.channel.id)
+    channel_settings_list = bot_settings.get("channel_settings", [])
+    
+    channel_setting = next(
+        (s for s in channel_settings_list if s.get("channel_id") == channel_id_str), 
+        None
+    )
 
-    if not passive_listening_enabled and not is_direct_mention:
-        logger.debug(f"Ignoring message {message.id} because passive listening is disabled and it's not a direct mention.")
+    # Default to True if no specific setting is found in the database
+    has_access = channel_setting.get("has_access") if channel_setting else True
+    passive_listening = channel_setting.get("passive_listening") if channel_setting else True
+
+    # Rule 1: Hard block if access is denied
+    if not has_access:
+        logger.debug(f"Ignoring message {message.id} in channel {channel_id_str}: access denied by settings.")
+        return
+
+    # Rule 2: Ignore if passive listening is off and it's not a direct mention
+    if not passive_listening and not is_direct_mention:
+        logger.debug(f"Ignoring message {message.id} in channel {channel_id_str}: passive listening disabled.")
         return
     # --- END OF MODIFICATION ---
-
-    # LIGNE SUPPRIMÉE
-    # await ui.add_thinking_reaction(message)
     
     try:
         clean_current_content = await _replace_mentions(message.content, message)

@@ -2,6 +2,34 @@
 import * as api from './api.js';
 import * as ui from './ui.js';
 
+// NEW EVENT HANDLER for channel permission toggles
+/**
+ * Handles the click event on a channel permission toggle switch.
+ * @param {Event} event - The click/change event.
+ */
+async function handleUpdateChannelPermission(event) {
+    const toggle = event.target;
+    const { botId, channelId, settingName } = toggle.dataset;
+    const newValue = toggle.checked;
+
+    // Disable the toggle temporarily to prevent rapid clicking
+    toggle.disabled = true;
+
+    try {
+        const payload = { [settingName]: newValue };
+        await api.updateBotChannelSettings(botId, channelId, payload);
+        ui.showToast('Permission updated successfully!', 'success');
+    } catch (error) {
+        ui.showToast(`Error: ${error.message}`, 'error');
+        // Revert the checkbox to its previous state on error
+        toggle.checked = !newValue;
+    } finally {
+        // Re-enable the toggle
+        toggle.disabled = false;
+    }
+}
+
+
 /**
  * Handles the connection to the log stream WebSocket and updates the UI.
  * @param {string} botId - The ID of the bot to connect to.
@@ -545,7 +573,9 @@ export function getBotViewEventHandlers() {
             deleteNote: handleDeleteUserNote
         },
         // NEW: Add the evaluation handler
-        evaluateLlm: handleEvaluateLlm
+        evaluateLlm: handleEvaluateLlm,
+        // NEW: Add the channel permission handler
+        updateChannelPermission: handleUpdateChannelPermission
     };
 }
 

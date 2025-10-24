@@ -214,6 +214,18 @@ function attachShellEventListeners() {
                 }
             }
         });
+
+        // NEW: Event delegation for channel permission toggles.
+        // We use 'change' event for checkboxes as it's more appropriate.
+        mainContent.addEventListener('change', (event) => {
+            const permissionToggle = event.target.closest('.channel-permission-toggle');
+            if (permissionToggle) {
+                const handlers = events.getBotViewEventHandlers();
+                if (handlers.updateChannelPermission) {
+                    handlers.updateChannelPermission(event);
+                }
+            }
+        });
     }
 }
 

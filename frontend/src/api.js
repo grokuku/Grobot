@@ -599,3 +599,39 @@ export async function fetchLLMEvaluationResults(llmCategory) {
     }
     return await response.json();
 }
+
+// --- NEW: CHANNEL SETTINGS API ---
+
+/**
+ * Fetches the list of channels and their associated settings for a bot.
+ * @param {number} botId The ID of the bot.
+ * @returns {Promise<Array<object>>} A list of channel objects with their settings.
+ */
+export async function fetchBotChannelsSettings(botId) {
+    const response = await fetchWithAuth(`${API_BASE_URL}/bots/${botId}/channels`);
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to fetch channel settings. Is the bot online?');
+    }
+    return await response.json();
+}
+
+/**
+ * Updates the settings for a specific channel.
+ * @param {number} botId The ID of the bot.
+ * @param {string} channelId The ID of the channel.
+ * @param {object} settings The settings to update (e.g., { has_access: true }).
+ * @returns {Promise<object>} The updated channel settings object.
+ */
+export async function updateBotChannelSettings(botId, channelId, settings) {
+    const response = await fetchWithAuth(`${API_BASE_URL}/bots/${botId}/channels/${channelId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+    });
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to update channel settings');
+    }
+    return await response.json();
+}

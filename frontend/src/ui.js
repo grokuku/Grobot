@@ -1,6 +1,6 @@
 // FILE: frontend/src/ui.js
 
-import { fetchBots, fetchModels, fetchMcpServers, searchFilesForBot, fetchMcpServerSchema, fetchBotMemory, fetchMcpServerTools, fetchWorkflowsForBot, runWorkflow, deleteWorkflow, fetchWorkflow, fetchLLMEvaluationResults } from './api.js';
+import { fetchBots, fetchModels, fetchMcpServers, searchFilesForBot, fetchMcpServerSchema, fetchBotMemory, fetchMcpServerTools, fetchWorkflowsForBot, runWorkflow, deleteWorkflow, fetchWorkflow, fetchLLMEvaluationResults, fetchBotChannelsSettings } from './api.js';
 import { showWorkflowEditorModal } from './workflow_editor.js';
 import { handleDeleteMemoryEntry } from './events.js';
 
@@ -292,6 +292,58 @@ export function populateModelDropdown(selectTarget, selectedValue, availableMode
 
 // --- Bot Settings Sub-Tab Renderers ---
 
+// NEW FUNCTION
+async function renderChannelSettings(container, botId) {
+    container.innerHTML = `<p class="form-help">Fetching channel list...</p>`;
+    try {
+        const channels = await fetchBotChannelsSettings(botId);
+        if (channels.length === 0) {
+            container.innerHTML = `<p class="form-help">No text channels found for this bot. Make sure it's in a server.</p>`;
+            return;
+        }
+
+        const tableRows = channels.map(channel => `
+            <tr>
+                <td>${channel.name}</td>
+                <td class="actions-cell">
+                    <label class="switch" title="Allow bot to read and reply in this channel.">
+                        <input type="checkbox" class="channel-permission-toggle" 
+                            data-bot-id="${botId}" data-channel-id="${channel.id}" 
+                            data-setting-name="has_access" ${channel.has_access ? 'checked' : ''}>
+                        <span class="slider round"></span>
+                    </label>
+                </td>
+                <td class="actions-cell">
+                    <label class="switch" title="Allow bot to listen passively and reply without being mentioned.">
+                        <input type="checkbox" class="channel-permission-toggle" 
+                            data-bot-id="${botId}" data-channel-id="${channel.id}" 
+                            data-setting-name="passive_listening" ${channel.passive_listening ? 'checked' : ''}>
+                        <span class="slider round"></span>
+                    </label>
+                </td>
+            </tr>
+        `).join('');
+
+        container.innerHTML = `
+            <table class="files-table channel-settings-table">
+                <thead>
+                    <tr>
+                        <th>Channel Name</th>
+                        <th>Access</th>
+                        <th>Passive Listening</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${tableRows}
+                </tbody>
+            </table>
+        `;
+    } catch (error) {
+        container.innerHTML = `<p class="error">Error: ${error.message}</p>`;
+    }
+}
+
+
 function renderBotSettingsGeneralTab(bot, draftBot, container) {
     container.innerHTML = `
             <fieldset>
@@ -311,24 +363,17 @@ function renderBotSettingsGeneralTab(bot, draftBot, container) {
                 </div>
             </fieldset>
             <fieldset>
-                <legend>Behavior</legend>
-                <div class="form-actions">
-                    <label for="bot-passive-listening" class="checkbox-label">
-                        <div class="switch">
-                            <input type="checkbox" id="bot-passive-listening" name="passive_listening_enabled" ${bot.passive_listening_enabled ? 'checked' : ''}>
-                            <span class="slider round"></span>
-                        </div>
-                        <span>Enable Passive Listening</span>
-                    </label>
-                    <p class="form-help">If enabled, the bot will listen to all messages in a channel and decide for itself when to respond, even if not directly mentioned. Requires the 'Message Content' privileged intent.</p>
-                </div>
+                <legend>Channel Permissions</legend>
+                <p class="form-help">Control where and how the bot can operate. Changes are saved instantly.</p>
+                <div id="channel-settings-container"></div>
             </fieldset>
         `;
+
+    renderChannelSettings(container.querySelector('#channel-settings-container'), bot.id);
 
     container.querySelector('#bot-name').addEventListener('input', (e) => draftBot.name = e.target.value);
     container.querySelector('#discord-token').addEventListener('input', (e) => draftBot.discord_token = e.target.value);
     container.querySelector('#bot-is-active').addEventListener('change', (e) => draftBot.is_active = e.target.checked);
-    container.querySelector('#bot-passive-listening').addEventListener('change', (e) => draftBot.passive_listening_enabled = e.target.checked);
 }
 
 function renderEvaluationResults(container, results) {

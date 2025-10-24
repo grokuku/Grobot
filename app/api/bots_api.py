@@ -1,15 +1,17 @@
 # app/api/bots_api.py
 import traceback
 import asyncio
-from typing import List, Dict
+from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
-from app.database import crud_bots, crud_settings
+from app.database import crud_bots, crud_settings, crud_channel_settings
 from app.database.sql_session import get_db
 from app.database.chroma_manager import chroma_manager
 from app.schemas import bot_schemas, mcp_schemas
 from app.schemas.bot_schemas import LogMessage
+from app.core.websocket_manager import websocket_manager
+
 
 # --- Log Broadcasting Manager ---
 
@@ -217,6 +219,77 @@ def update_bot_mcp_servers_associations(
     updated_bot = crud_bots.update_bot_mcp_servers(db=db, bot_id=bot_id, mcp_associations=mcp_associations)
     
     return updated_bot
+
+# --- NEW: Channel Settings Endpoints ---
+
+@router.get("/{bot_id}/channels", response_model=List[Dict[str, Any]])
+async def get_bot_channels_with_settings(bot_id: int, db: Session = Depends(get_db)):
+    """
+    Retrieves the list of channels a bot has access to, merged with saved settings.
+    This endpoint communicates with the live bot process via WebSocket.
+    """
+    if crud_bots.get_bot(db, bot_id=bot_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bot not found.")
+
+    try:
+        # 1. Request channel list from the live bot process
+        discord_channels = await websocket_manager.request(bot_id, {"action": "get_channels"})
+    except (ValueError, TimeoutError) as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Bot process is not connected or did not respond: {e}")
+
+    # 2. Get saved settings from the database
+    db_settings_list = crud_channel_settings.get_all_channel_settings_for_bot(db, bot_id=bot_id)
+    settings_map = {s.channel_id: s for s in db_settings_list}
+
+    # 3. Merge the two lists
+    results = []
+    for channel in discord_channels:
+        channel_id = channel.get("id")
+        if not channel_id:
+            continue
+        
+        settings = settings_map.get(channel_id)
+        if settings:
+            results.append({
+                "id": channel_id,
+                "name": channel.get("name"),
+                "has_access": settings.has_access,
+                "passive_listening": settings.passive_listening
+            })
+        else:
+            # If no settings are in DB, return default values
+            results.append({
+                "id": channel_id,
+                "name": channel.get("name"),
+                "has_access": True,
+                "passive_listening": True
+            })
+    
+    return results
+
+@router.post("/{bot_id}/channels/{channel_id}", response_model=bot_schemas.ChannelSettings)
+def upsert_channel_settings_api(
+    bot_id: int, 
+    channel_id: str, 
+    settings_data: bot_schemas.ChannelSettingsUpdate, 
+    db: Session = Depends(get_db)
+):
+    """
+    Creates or updates the access and listening settings for a bot in a specific channel.
+    """
+    if crud_bots.get_bot(db, bot_id=bot_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bot not found.")
+
+    try:
+        db_settings = crud_channel_settings.upsert_channel_settings(
+            db=db,
+            bot_id=bot_id,
+            channel_id=channel_id,
+            settings_data=settings_data
+        )
+        return db_settings
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to save channel settings: {e}")
 
 
 # --- Specific endpoints for the Bot Launcher ---

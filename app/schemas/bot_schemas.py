@@ -3,6 +3,28 @@ from pydantic import BaseModel, Field, ConfigDict, computed_field
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 
+# --- NOUVEAU: Schémas pour les paramètres de salon ---
+class ChannelSettingsBase(BaseModel):
+    has_access: bool = Field(True, description="Determines if the bot can operate in this channel at all.")
+    passive_listening: bool = Field(True, description="Determines if the bot should listen to non-mention messages.")
+
+class ChannelSettingsCreate(ChannelSettingsBase):
+    pass
+
+class ChannelSettingsUpdate(ChannelSettingsBase):
+    has_access: Optional[bool] = None
+    passive_listening: Optional[bool] = None
+
+class ChannelSettings(ChannelSettingsBase):
+    id: int
+    bot_id: int
+    channel_id: str
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # --- Schémas pour la gestion des Serveurs MCP ---
 # Schéma de base pour un serveur MCP, utilisé pour l'imbrication.
 class MCPServerInDB(BaseModel):
@@ -108,6 +130,8 @@ class Bot(BaseModel):
     multimodal_llm_model: Optional[str] = None
 
     mcp_servers: List[MCPServerAssociationDetails] = []
+
+    channel_settings: List[ChannelSettings] = [] # AJOUT: inclure les paramètres de salon
 
     @computed_field
     @property

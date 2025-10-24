@@ -92,125 +92,125 @@ L'objectif principal est une **administrabilité dynamique** via une **interface
 
 ### 3.2. Arborescence Complète du Projet et Rôle des Fichiers
 
-```
-📁 GroBot/
-  ├─ 📄 .dockerignore                 # Ignore les fichiers non nécessaires lors de la construction de l'image Docker.
-  ├─ 📄 .env.example                  # Fichier d'exemple pour les variables d'environnement.
-  ├─ 📄 docker-compose.yml            # Définit et orchestre tous les services de l'application.
-  ├─ 📄 Dockerfile                    # Recette multi-stage pour l'image 'app' (API+Frontend).
-  ├─ 📄 features.md                   # Suivi de haut niveau des fonctionnalités.
-  ├─ 📄 project_context.md            # Ce fichier, source de vérité du projet.
-  ├─ 📄 requirements.txt              # Dépendances Python pour le service 'app'.
-  │
-  ├─ 📁 app/                           # Cœur du Backend : API et logique métier.
-  │  ├─ 📄 __init__.py                 # Marque le dossier comme un package Python.
-  │  ├─ 📄 alembic.ini                 # Fichier de configuration pour Alembic.
-  │  ├─ 📄 config.py                   # Charge les variables d'environnement via Pydantic.
-  │  ├─ 📄 main.py                     # Point d'entrée de l'API FastAPI, gère le cycle de vie et les routeurs.
-  │  │
-  │  ├─ 📁 alembic/                    # Dossier pour la gestion des migrations de base de données.
-  │  │  ├─ 📄 README                    # Instructions pour Alembic.
-  │  │  ├─ 📄 env.py                    # Script de configuration d'environnement pour Alembic.
-  │  │  ├─ 📄 script.py.mako            # Template pour les nouveaux scripts de migration.
-  │  │  └─ 📁 versions/               # Contient tous les scripts de migration générés.
-  │  │     └─ ... (fichiers de migration auto-générés)
-  │  │
-  │  ├─ 📁 api/                        # Contient les routeurs FastAPI (endpoints).
-  │  │  ├─ 📄 __init__.py               # Marque le dossier comme un package Python.
-  │  │  ├─ 📄 bots_api.py               # API pour la gestion des bots (CRUD).
-  │  │  ├─ 📄 bots_api.py.bak           # Fichier de sauvegarde, non utilisé.
-  │  │  ├─ 📄 chat_api.py               # API pour l'orchestration des agents et le chat.
-  │  │  ├─ 📄 files_api.py              # API pour la gestion des fichiers.
-  │  │  ├─ 📄 llm_api.py                # API pour l'interaction avec les LLMs (ex: lister les modèles).
-  │  │  ├─ 📄 mcp_api.py                # API pour la gestion des serveurs MCP.
-  │  │  ├─ 📄 settings_api.py           # API pour les paramètres globaux.
-  │  │  ├─ 📄 tools_api.py              # API proxy pour l'exécution des outils externes (MCP).
-  │  │  ├─ 📄 user_profiles_api.py      # API pour la gestion des profils et notes utilisateurs.
-  │  │  └─ 📄 workflows_api.py          # API pour la gestion des workflows (CRUD et exécution).
-  │  │
-  │  ├─ 📁 core/                       # Logique métier principale de l'application.
-  │  │  ├─ 📄 __init__.py               # Marque le dossier comme un package Python.
-  │  │  ├─ 📄 agent_logic.py.old        # Fichier de sauvegarde, non utilisé.
-  │  │  ├─ 📄 agent_orchestrator.py     # Orchestre la chaîne d'appels aux agents spécialisés.
-  │  │  ├─ 📄 llm_manager.py            # Gère les instances de clients LLM et les interactions.
-  │  │  ├─ 📄 websocket_manager.py      # Gère les connexions WebSocket persistantes avec les clients bot.
-  │  │  └─ 📁 agents/                 # Contient la logique pour chaque agent LLM spécialisé.
-  │  │     ├─ 📄 __init__.py           # Marque le dossier comme un package Python.
-  │  │     ├─ 📄 acknowledger.py       # Agent pour générer les messages d'attente.
-  │  │     ├─ 📄 archivist.py          # Agent pour archiver les informations en mémoire.
-  │  │     ├─ 📄 clarifier.py          # Agent pour demander des informations manquantes.
-  │  │     ├─ 📄 gatekeeper.py         # Agent pour décider si le bot doit répondre.
-  │  │     ├─ 📄 parameter_extractor.py# Agent pour extraire les paramètres des outils.
-  │  │     ├─ 📄 planner.py            # Agent pour créer le plan d'exécution des outils.
-  │  │     ├─ 📄 prompts.py            # Centralise tous les prompts système des agents.
-  │  │     ├─ 📄 synthesizer.py        # Agent pour formuler la réponse finale.
-  │  │     └─ 📄 tool_identifier.py    # Agent pour identifier les outils nécessaires.
-  │  │
-  │  ├─ 📁 database/                   # Module pour l'accès aux bases de données.
-  │  │  ├─ 📄 __init__.py               # Marque le dossier comme un package Python.
-  │  │  ├─ 📄 base.py                   # Définit la base déclarative SQLAlchemy.
-  │  │  ├─ 📄 chroma_manager.py         # Gère les interactions avec ChromaDB (mémoire vectorielle).
-  │  │  ├─ 📄 crud_bots.py              # Fonctions CRUD pour les bots.
-  │  │  ├─ 📄 crud_files.py             # Fonctions CRUD pour les fichiers.
-  │  │  ├─ 📄 crud_mcp.py               # Fonctions CRUD pour les serveurs MCP.
-  │  │  ├─ 📄 crud_settings.py          # Fonctions CRUD pour les paramètres globaux.
-  │  │  ├─ 📄 crud_user_notes.py        # Fonctions CRUD pour les notes sur les utilisateurs.
-  │  │  ├─ 📄 crud_user_profiles.py     # Fonctions CRUD pour les profils utilisateurs.
-  │  │  ├─ 📄 crud_workflows.py         # Fonctions CRUD pour les workflows.
-  │  │  ├─ 📄 redis_session.py          # Gère la connexion au client Redis.
-  │  │  ├─ 📄 sql_models.py             # Définit les modèles de table SQLAlchemy.
-  │  │  └─ 📄 sql_session.py            # Gère la session de base de données SQL.
-  │  │
-  │  ├─ 📁 schemas/                    # Contient les schémas Pydantic pour la validation des données API.
-  │  │  ├─ 📄 __init__.py               # Marque le dossier comme un package Python.
-  │  │  ├─ 📄 bot_schemas.py            # Schémas Pydantic pour les bots.
-  │  │  ├─ 📄 chat_schemas.py           # Schémas Pydantic pour le chat et les agents.
-  │  │  ├─ 📄 file_schemas.py           # Schémas Pydantic pour les fichiers.
-  │  │  ├─ 📄 mcp_schemas.py            # Schémas Pydantic pour les serveurs MCP.
-  │  │  ├─ 📄 settings_schema.py        # Schémas Pydantic pour les paramètres.
-  │  │  ├─ 📄 user_note_schemas.py      # Schémas Pydantic pour les notes utilisateurs.
-  │  │  ├─ 📄 user_profile_schemas.py   # Schémas Pydantic pour les profils utilisateurs.
-  │  │  └─ 📄 workflow_schemas.py       # Schémas Pydantic pour les workflows.
-  │  │
-  │  └─ 📁 worker/                     # Configuration pour les tâches de fond (Celery).
-  │     ├─ 📄 __init__.py               # Marque le dossier comme un package Python.
-  │     ├─ 📄 celery_app.py             # Définit l'instance de l'application Celery.
-  │     └─ 📄 tasks.py                  # Définit les tâches Celery (ex: archivage, exécution de workflows).
-  │
-  ├─ 📁 chromadb_overriden/
-  │  └─ 📄 Dockerfile                  # Personnalise l'image ChromaDB (ex: ajout de 'curl').
-  │
-  ├─ 📁 discord_bot_launcher/         # Service isolé qui gère les processus des bots Discord.
-  │  ├─ 📄 bot_process.py              # Point d'entrée du client Discord, initialise les handlers.
-  │  ├─ 📄 bot_process.py.old          # Fichier de sauvegarde, non utilisé.
-  │  ├─ 📄 Dockerfile                  # Image Docker pour le service launcher.
-  │  ├─ 📄 launcher.py                 # Script qui surveille l'API et lance/arrête les bots.
-  │  ├─ 📄 requirements.txt            # Dépendances Python pour le service launcher.
-  │  └─ 📁 client/                     # Logique modulaire du client Discord.
-  │     ├─ 📄 __init__.py               # Marque le dossier comme un package Python.
-  │     ├─ 📄 api_client.py             # Centralise toutes les requêtes vers l'API backend.
-  │     ├─ 📄 discord_ui.py             # Fonctions utilitaires pour l'UI de Discord (réactions, etc.).
-  │     └─ 📄 event_handler.py          # Contient la logique principale `on_message`.
-  │
-  ├─ 📁 frontend/                     # Application combinée (Nginx + SPA).
-  │  ├─ 📄 entrypoint.sh               # Script de démarrage pour le conteneur 'app' (nginx + uvicorn).
-  │  ├─ 📄 nginx.conf                  # Configuration Nginx (reverse proxy et fichiers statiques).
-  │  └─ 📁 src/                        # Code source JavaScript pour l'interface utilisateur.
-  │     ├─ 📄 api.js                    # Fonctions utilitaires pour les appels API.
-  │     ├─ 📄 events.js                 # Gestionnaires d'événements (formulaires, WebSocket).
-  │     ├─ 📄 index.html                # Structure HTML de l'application.
-  │     ├─ 📄 main.js                   # Point d'entrée JavaScript, initialisation et routage.
-  │     ├─ 📄 style.css                 # Styles CSS.
-  │     ├─ 📄 ui.js                     # Fonctions pour manipuler le DOM et mettre à jour l'UI.
-  │     └─ 📄 workflow_editor.js        # Module UI pour l'éditeur de workflows.
-  │
-  └─ 📁 grobot_tools/                 # Service MCP contenant les outils standards.
-     ├─ 📄 Dockerfile                  # Dockerfile pour le service d'outils.
-     ├─ 📄 requirements.txt            # Dépendances Python pour les outils.
-     ├─ 📄 supervisord.conf            # Configuration Supervisor pour lancer les outils.
-     ├─ 📁 file_tools/                 # Outils de gestion de fichiers.
-     │  └─ 📄 server.py                 # Point d'entrée du serveur MCP pour les outils de fichiers.
-     └─ 📁 time_tool/                  # Outils liés au temps.
+```    📁 GroBot/
+    ├─ 📄 .dockerignore                 # Ignore les fichiers non nécessaires lors de la construction de l'image Docker.
+    ├─ 📄 .env.example                  # Fichier d'exemple pour les variables d'environnement.
+    ├─ 📄 docker-compose.yml            # Définit et orchestre tous les services de l'application.
+    ├─ 📄 Dockerfile                    # Recette multi-stage pour l'image 'app' (API+Frontend).
+    ├─ 📄 features.md                   # Suivi de haut niveau des fonctionnalités.
+    ├─ 📄 project_context.md            # Ce fichier, source de vérité du projet.
+    ├─ 📄 requirements.txt              # Dépendances Python pour le service 'app'.
+    │
+    ├─ 📁 app/                           # Cœur du Backend : API et logique métier.
+    │  ├─ 📄 __init__.py                 # Marque le dossier comme un package Python.
+    │  ├─ 📄 alembic.ini                 # Fichier de configuration pour Alembic.
+    │  ├─ 📄 config.py                   # Charge les variables d'environnement via Pydantic.
+    │  ├─ 📄 main.py                     # Point d'entrée de l'API FastAPI, gère le cycle de vie et les routeurs.
+    │  │
+    │  ├─ 📁 alembic/                    # Dossier pour la gestion des migrations de base de données.
+    │  │  ├─ 📄 README                    # Instructions pour Alembic.
+    │  │  ├─ 📄 env.py                    # Script de configuration d'environnement pour Alembic.
+    │  │  ├─ 📄 script.py.mako            # Template pour les nouveaux scripts de migration.
+    │  │  └─ 📁 versions/               # Contient tous les scripts de migration générés.
+    │  │     └─ ... (fichiers de migration auto-générés)
+    │  │
+    │  ├─ 📁 api/                        # Contient les routeurs FastAPI (endpoints).
+    │  │  ├─ 📄 __init__.py               # Marque le dossier comme un package Python.
+    │  │  ├─ 📄 bots_api.py               # API pour la gestion des bots (CRUD).
+    │  │  ├─ 📄 bots_api.py.bak           # Fichier de sauvegarde, non utilisé.
+    │  │  ├─ 📄 chat_api.py               # API pour l'orchestration des agents et le chat.
+    │  │  ├─ 📄 files_api.py              # API pour la gestion des fichiers.
+    │  │  ├─ 📄 llm_api.py                # API pour l'interaction avec les LLMs (ex: lister les modèles).
+    │  │  ├─ 📄 mcp_api.py                # API pour la gestion des serveurs MCP.
+    │  │  ├─ 📄 settings_api.py           # API pour les paramètres globaux.
+    │  │  ├─ 📄 tools_api.py              # API proxy pour l'exécution des outils externes (MCP).
+    │  │  ├─ 📄 user_profiles_api.py      # API pour la gestion des profils et notes utilisateurs.
+    │  │  └─ 📄 workflows_api.py          # API pour la gestion des workflows (CRUD et exécution).
+    │  │
+    │  ├─ 📁 core/                       # Logique métier principale de l'application.
+    │  │  ├─ 📄 __init__.py               # Marque le dossier comme un package Python.
+    │  │  ├─ 📄 agent_logic.py.old        # Fichier de sauvegarde, non utilisé.
+    │  │  ├─ 📄 agent_orchestrator.py     # Orchestre la chaîne d'appels aux agents spécialisés.
+    │  │  ├─ 📄 llm_manager.py            # Gère les instances de clients LLM et les interactions.
+    │  │  ├─ 📄 websocket_manager.py      # Gère les connexions WebSocket persistantes avec les clients bot.
+    │  │  └─ 📁 agents/                 # Contient la logique pour chaque agent LLM spécialisé.
+    │  │     ├─ 📄 __init__.py           # Marque le dossier comme un package Python.
+    │  │     ├─ 📄 acknowledger.py       # Agent pour générer les messages d'attente.
+    │  │     ├─ 📄 archivist.py          # Agent pour archiver les informations en mémoire.
+    │  │     ├─ 📄 clarifier.py          # Agent pour demander des informations manquantes.
+    │  │     ├─ 📄 gatekeeper.py         # Agent pour décider si le bot doit répondre.
+    │  │     ├─ 📄 parameter_extractor.py# Agent pour extraire les paramètres des outils.
+    │  │     ├─ 📄 planner.py            # Agent pour créer le plan d'exécution des outils.
+    │  │     ├─ 📄 prompts.py            # Centralise tous les prompts système des agents.
+    │  │     ├─ 📄 synthesizer.py        # Agent pour formuler la réponse finale.
+    │  │     └─ 📄 tool_identifier.py    # Agent pour identifier les outils nécessaires.
+    │  │
+    │  ├─ 📁 database/                   # Module pour l'accès aux bases de données.
+    │  │  ├─ 📄 __init__.py               # Marque le dossier comme un package Python.
+    │  │  ├─ 📄 base.py                   # Définit la base déclarative SQLAlchemy.
+    │  │  ├─ 📄 chroma_manager.py         # Gère les interactions avec ChromaDB (mémoire vectorielle).
+    │  │  ├─ 📄 crud_bots.py              # Fonctions CRUD pour les bots.
+    │  │  ├─ 📄 crud_channel_settings.py  # Fonctions CRUD pour les permissions par salon.
+    │  │  ├─ 📄 crud_files.py             # Fonctions CRUD pour les fichiers.
+    │  │  ├─ 📄 crud_mcp.py               # Fonctions CRUD pour les serveurs MCP.
+    │  │  ├─ 📄 crud_settings.py          # Fonctions CRUD pour les paramètres globaux.
+    │  │  ├─ 📄 crud_user_notes.py        # Fonctions CRUD pour les notes sur les utilisateurs.
+    │  │  ├─ 📄 crud_user_profiles.py     # Fonctions CRUD pour les profils utilisateurs.
+    │  │  ├─ 📄 crud_workflows.py         # Fonctions CRUD pour les workflows.
+    │  │  ├─ 📄 redis_session.py          # Gère la connexion au client Redis.
+    │  │  ├─ 📄 sql_models.py             # Définit les modèles de table SQLAlchemy.
+    │  │  └─ 📄 sql_session.py            # Gère la session de base de données SQL.
+    │  │
+    │  ├─ 📁 schemas/                    # Contient les schémas Pydantic pour la validation des données API.
+    │  │  ├─ 📄 __init__.py               # Marque le dossier comme un package Python.
+    │  │  ├─ 📄 bot_schemas.py            # Schémas Pydantic pour les bots.
+    │  │  ├─ 📄 chat_schemas.py           # Schémas Pydantic pour le chat et les agents.
+    │  │  ├─ 📄 file_schemas.py           # Schémas Pydantic pour les fichiers.
+    │  │  ├─ 📄 mcp_schemas.py            # Schémas Pydantic pour les serveurs MCP.
+    │  │  ├─ 📄 settings_schema.py        # Schémas Pydantic pour les paramètres.
+    │  │  ├─ 📄 user_note_schemas.py      # Schémas Pydantic pour les notes utilisateurs.
+    │  │  ├─ 📄 user_profile_schemas.py   # Schémas Pydantic pour les profils utilisateurs.
+    │  │  └─ 📄 workflow_schemas.py       # Schémas Pydantic pour les workflows.
+    │  │
+    │  └─ 📁 worker/                     # Configuration pour les tâches de fond (Celery).
+    │     ├─ 📄 __init__.py               # Marque le dossier comme un package Python.
+    │     ├─ 📄 celery_app.py             # Définit l'instance de l'application Celery.
+    │     └─ 📄 tasks.py                  # Définit les tâches Celery (ex: archivage, exécution de workflows).
+    │
+    ├─ 📁 chromadb_overriden/
+    │  └─ 📄 Dockerfile                  # Personnalise l'image ChromaDB (ex: ajout de 'curl').
+    │
+    ├─ 📁 discord_bot_launcher/         # Service isolé qui gère les processus des bots Discord.
+    │  ├─ 📄 bot_process.py              # Point d'entrée du client Discord, initialise les handlers.
+    │  ├─ 📄 bot_process.py.old          # Fichier de sauvegarde, non utilisé.
+    │  ├─ 📄 Dockerfile                  # Image Docker pour le service launcher.
+    │  ├─ 📄 launcher.py                 # Script qui surveille l'API et lance/arrête les bots.
+    │  ├─ 📄 requirements.txt            # Dépendances Python pour le service launcher.
+    │  └─ 📁 client/                     # Logique modulaire du client Discord.
+    │     ├─ 📄 __init__.py               # Marque le dossier comme un package Python.
+    │     ├─ 📄 api_client.py             # Centralise toutes les requêtes vers l'API backend.
+    │     ├─ 📄 discord_ui.py             # Fonctions utilitaires pour l'UI de Discord (réactions, etc.).
+    │     └─ 📄 event_handler.py          # Contient la logique principale `on_message`.
+    │
+    ├─ 📁 frontend/                     # Application combinée (Nginx + SPA).
+    │  ├─ 📄 entrypoint.sh               # Script de démarrage pour le conteneur 'app' (nginx + uvicorn).
+    │  ├─ 📄 nginx.conf                  # Configuration Nginx (reverse proxy et fichiers statiques).
+    │  └─ 📁 src/                        # Code source JavaScript pour l'interface utilisateur.
+    │     ├─ 📄 api.js                    # Fonctions utilitaires pour les appels API.
+    │     ├─ 📄 events.js                 # Gestionnaires d'événements (formulaires, WebSocket).
+    │     ├─ 📄 index.html                # Structure HTML de l'application.
+    │     ├─ 📄 main.js                   # Point d'entrée JavaScript, initialisation et routage.
+    │     ├─ 📄 style.css                 # Styles CSS.
+    │     ├─ 📄 ui.js                     # Fonctions pour manipuler le DOM et mettre à jour l'UI.
+    │     └─ 📄 workflow_editor.js        # Module UI pour l'éditeur de workflows.
+    │
+    └─ 📁 grobot_tools/                 # Service MCP contenant les outils standards.
+        ├─ 📄 Dockerfile                  # Dockerfile pour le service d'outils.
+        ├─ 📄 requirements.txt            # Dépendances Python pour les outils.
+        ├─ 📄 supervisord.conf            # Configuration Supervisor pour lancer les outils.
+        ├─ 📁 file_tools/                 # Outils de gestion de fichiers.
+        │  └─ 📄 server.py                 # Point d'entrée du serveur MCP pour les outils de fichiers.
+        └─ 📁 time_tool/                  # Outils liés au temps.
         └─ 📄 server.py                 # Point d'entrée du serveur MCP pour l'outil de temps.
 ```
 
@@ -230,7 +230,7 @@ L'objectif principal est une **administrabilité dynamique** via une **interface
         *   **Zone de Contenu :** Affiche la vue sélectionnée pour un bot via un système d'onglets. Les onglets principaux sont :
             *   **Test Chat :** Une interface pour interagir directement avec le bot.
             *   **Logs :** Un dashboard de logs en temps réel.
-            *   **Settings :** Le formulaire de configuration du bot, incluant les nouveaux réglages LLM par catégorie (serveur, modèle, contexte).
+            *   **Settings :** Le formulaire de configuration du bot, incluant les nouveaux réglages LLM par catégorie (serveur, modèle, contexte) et une nouvelle section pour les **permissions par salon**, affichant une liste des salons Discord du bot avec des interrupteurs pour contrôler l'accès et l'écoute passive pour chacun.
             *   **Files :** Le gestionnaire de fichiers du bot.
             *   **Memory :** Une vue de la mémoire vectorielle du bot.
             *   **Knowledge Base :** Une interface pour gérer les connaissances du bot sur les utilisateurs. Cette vue affiche une barre de recherche et, par défaut, la liste des utilisateurs connus par ce bot. Un clic sur un utilisateur ou une recherche réussie affiche la vue détaillée du profil et des notes de cet utilisateur.
@@ -365,6 +365,11 @@ Pour garantir l'interopérabilité, GroBot s'appuie sur des serveurs d'outils qu
 
 ### 7.2. Fonctionnalités Récemment Implémentées
 
+*   **Gestion Fine des Permissions par Salon**
+    *   **Analyse :** Le simple interrupteur global "Passive Listening" était insuffisant pour tester le `Gatekeeper` dans un environnement de production sans perturber les utilisateurs. Un besoin a été identifié pour contrôler le comportement du bot de manière granulaire, salon par salon, avec deux niveaux de contrôle : un blocage total ("Access") et un contrôle de l'écoute passive ("Passive Listening").
+    *   **Résolution :** La fonctionnalité a été implémentée sur l'ensemble de la pile. **1. Base de Données :** Une nouvelle table `channel_settings` a été ajoutée via un modèle SQLAlchemy (`sql_models.py`) et une migration Alembic pour stocker les permissions. **2. Backend :** Un nouveau fichier CRUD (`crud_channel_settings.py`) et de nouveaux schémas Pydantic (`bot_schemas.py`) ont été créés. Deux nouveaux endpoints ont été ajoutés à `bots_api.py` : un `POST` pour sauvegarder les permissions et un `GET` qui utilise une requête WebSocket vers le client Discord pour obtenir la liste des salons en temps réel et la fusionner avec les permissions stockées. **3. Frontend :** L'interface utilisateur dans l'onglet "Settings" (`ui.js`) a été refondue pour remplacer l'ancien interrupteur par un tableau affichant chaque salon avec ses deux interrupteurs. Les appels API (`api.js`) et les gestionnaires d'événements (`events.js`, `main.js`) correspondants ont été implémentés pour rendre l'interface interactive. **4. Client Discord :** La logique au début de la fonction `on_message` dans `event_handler.py` a été entièrement revue pour lire les permissions par salon depuis la configuration du bot mise en cache et appliquer les règles d'accès et d'écoute passive avant tout traitement.
+    *   **Statut :** IMPLÉMENTÉ.
+
 *   **Implémentation du Logging des Interactions LLM**
     *   **Analyse :** Un besoin crucial de débogage a été identifié : visualiser les prompts exacts envoyés aux LLM et les réponses brutes reçues. Cela est essentiel pour comprendre le comportement des agents et corriger les problèmes de contexte.
     *   **Résolution :** Un système de logging dédié a été implémenté. **1. Infrastructure :** Un répertoire `logs/` a été créé et monté via un volume dans `docker-compose.yml`. **2. Backend :** Une fonction de logging dédiée (`log_llm_interaction`) a été ajoutée dans `app/core/llm_manager.py`. Elle écrit chaque interaction (prompt et réponse) dans un fichier `logs/llm_interactions.md` dans un format Markdown lisible. Cette fonction est appelée depuis les points d'entrée `call_llm` et `call_llm_stream`, garantissant que tous les appels LLM, quelle que soit leur catégorie (décisionnel, outils, output), sont tracés.
@@ -447,7 +452,7 @@ Pour garantir l'interopérabilité, GroBot s'appuie sur des serveurs d'outils qu
 ### 7.5. Plan d'Action pour la Prochaine Session
 
 *   **Tâche Prioritaire : Résoudre le timeout de la commande `/prompt_generator`.**
-    *   **Description :** Maintenant que l'exécution des outils en langage naturel est stable, la prochaine priorité est de s'attaquer au problème de timeout intermittent sur les commandes slash qui font un usage intensif des outils, comme `/prompt_generator`. L'investigation se poursuivra en se basant sur le plan d'action défini (instrumentation et logging de performance).
+    *   **Description :** Maintenant que la gestion des permissions par salon est implémentée et stable, la prochaine priorité est de reprendre l'investigation du bug de timeout intermittent sur les commandes slash. Cette tâche était la priorité initiale avant la demande de gestion des permissions. L'investigation se poursuivra en se basant sur le plan d'action défini (instrumentation et logging de performance).
 
 ---
 

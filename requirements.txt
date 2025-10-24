@@ -1,4 +1,3 @@
-# requirements.txt
 # Framework Backend
 fastapi
 
@@ -41,3 +40,6 @@ Pillow
 
 # --- NEW: Ollama client library ---
 ollama>=0.5.3
+
+# --- NEW: Agentic Context Engine ---
+ace-framework
