@@ -1,3 +1,4 @@
+# discord_bot_launcher/client/event_handler.py
 import logging
 import asyncio
 import time
@@ -70,12 +71,43 @@ async def _handle_streaming_response(channel: discord.TextChannel, stream_url: s
             current_time = time.time()
             if (current_time - last_update_time >= UPDATE_INTERVAL_SECONDS) or (len(update_buffer) >= UPDATE_BUFFER_SIZE_CHARS):
                 if full_content.strip():
+                    # During streaming, we only update text content, no attachments yet.
                     await ui.edit_message(response_message, content=full_content)
                 update_buffer = ""
                 last_update_time = current_time
     finally:
-        if response_message.content != full_content:
-            await ui.edit_message(response_message, content=full_content or "...")
+        # Final processing after the stream has finished
+        final_text = full_content
+        files_to_send = []
+        error_messages = []
+
+        # Regex to find our custom image URL tag
+        image_url_pattern = re.compile(r'\[IMAGE_URL:(.*?)\]')
+        
+        # Find all URLs from the tag and clean the text for the final message
+        found_urls = image_url_pattern.findall(final_text)
+        final_text = image_url_pattern.sub('', final_text).strip()
+
+        if found_urls:
+            logger.info(f"Found {len(found_urls)} image URL tags in the final response. Preparing attachments...")
+            # If we found URLs, download them using the existing helper function
+            for url in found_urls:
+                image_file, error_msg = await _download_and_prepare_file(url, channel.guild)
+                if image_file:
+                    files_to_send.append(image_file)
+                if error_msg:
+                    error_messages.append(f"_{error_msg}_")
+        
+        if error_messages:
+            final_text += "\n" + "\n".join(error_messages)
+
+        # Make sure there's some content if the message was only an image tag
+        if not final_text and files_to_send:
+            final_text = "Here is the generated image:"
+        
+        # Finally, edit the message with the final text and any attached files.
+        # This assumes ui.edit_message correctly passes the 'attachments' kwarg.
+        await ui.edit_message(response_message, content=final_text or "...", attachments=files_to_send)
 
 async def on_message(message: discord.Message):
     if message.author.bot: return
@@ -97,7 +129,8 @@ async def on_message(message: discord.Message):
         return
     # --- END OF MODIFICATION ---
 
-    await ui.add_thinking_reaction(message)
+    # LIGNE SUPPRIMÉE
+    # await ui.add_thinking_reaction(message)
     
     try:
         clean_current_content = await _replace_mentions(message.content, message)
@@ -131,6 +164,9 @@ async def on_message(message: discord.Message):
         if action == "STOP":
             logger.info(f"Orchestrator decided to stop. Reason: {response.get('reason')}")
             return
+
+        # BLOC AJOUTÉ : Add the thinking reaction only if the bot has decided to act.
+        await ui.add_thinking_reaction(message)
 
         if action in ["CLARIFY", "ACKNOWLEDGE_AND_EXECUTE", "SYNTHESIZE"]:
             await ui.update_reaction_to_working(message)

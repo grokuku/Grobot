@@ -1,5 +1,6 @@
+# app/core/agent_orchestrator.py
 import logging
-from typing import Union, List, Dict, Any, Optional
+from typing import Union, List, Dict, Any, Optional, AsyncGenerator
 import httpx
 import asyncio
 import json
@@ -12,7 +13,7 @@ from sqlalchemy.orm import Session
 
 # NEW: Import the LLM manager and prompts
 from app.core import llm_manager
-from app.core.agents import prompts
+from app.core.agents import prompts, synthesizer
 
 # Schema Imports
 from app.schemas.chat_schemas import (
@@ -25,7 +26,7 @@ from app.schemas.chat_schemas import (
 )
 
 # Database CRUD Imports
-from app.database import crud_bots, crud_mcp, crud_settings
+from app.database import crud_bots, crud_mcp, crud_settings, sql_models
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,38 @@ async def process_user_message(
         plan=plan_result,
         tool_definitions=required_tool_definitions
     )
+
+# --- NEW Synthesis Phase Router ---
+
+async def run_synthesis_phase(
+    bot: sql_models.Bot,
+    global_settings: sql_models.GlobalSettings,
+    history: List[Dict[str, Any]],
+    tool_results: List[Dict[str, Any]]
+) -> AsyncGenerator[str, None]:
+    """
+    Routes to the appropriate synthesizer based on whether tools were executed.
+    This is the new entry point for the final response generation phase.
+    """
+    if tool_results:
+        logger.info("Tool results are present. Routing to Tool Result Synthesizer.")
+        async for chunk in synthesizer.run_tool_result_synthesizer(
+            bot=bot,
+            global_settings=global_settings,
+            history=history,
+            tool_results=tool_results
+        ):
+            yield chunk
+    else:
+        logger.info("No tool results. Routing to standard conversational Synthesizer.")
+        async for chunk in synthesizer.run_synthesizer(
+            bot=bot,
+            global_settings=global_settings,
+            history=history,
+            tool_results=tool_results
+        ):
+            yield chunk
+
 
 # --- Helper functions for tool discovery and execution ---
 

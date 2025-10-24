@@ -114,9 +114,10 @@ async def stream_response(
 
     async def event_generator():
         try:
-            logger.info(f"Starting synthesizer for message {message_id}")
+            logger.info(f"Starting synthesis phase for message {message_id}")
             
-            async for chunk in synthesizer.run_synthesizer(
+            # MODIFICATION: Use the new synthesis phase router instead of a direct call.
+            async for chunk in agent_orchestrator.run_synthesis_phase(
                 bot=bot,
                 global_settings=global_settings,
                 history=history_data,
@@ -127,7 +128,7 @@ async def stream_response(
                     break
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             
-            logger.info(f"Synthesizer stream finished for message {message_id}")
+            logger.info(f"Synthesis stream finished for message {message_id}")
 
         except Exception as e:
             logger.error(f"Error during streaming for message {message_id}: {e}", exc_info=True)
