@@ -63,6 +63,7 @@ services:
       - ./app:/app/app
       - ./data/files_data:/app/files
       - ./logs:/app/logs
+      - ./data/playbooks:/app/data/playbooks
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -86,6 +87,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./logs:/app/logs
+      - ./data/playbooks:/app/data/playbooks
     env_file:
       - ./.env
     extra_hosts:
@@ -162,8 +164,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-
-# --- Réseau pour la communication entre services ---
+  # --- Réseau pour la communication entre services ---
 networks:
   grobot_net:
     driver: bridge

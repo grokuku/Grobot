@@ -1,4 +1,3 @@
-# /app/app/api/chat_api.py
 import logging
 import json
 from typing import Union
@@ -9,10 +8,12 @@ from sqlalchemy.orm import Session
 import redis
 
 from app.core import agent_orchestrator
-from app.core.agents import archivist, synthesizer
+from app.core.agents import archivist
 from app.database import crud_bots, crud_user_notes, crud_user_profiles, sql_session, crud_settings
 from app.database import redis_session
 from app.schemas import chat_schemas
+# --- MODIFICATION: Import the new Celery task ---
+from app.worker.tasks import learn_from_interaction
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -40,12 +41,21 @@ async def process_message(
     It now saves the execution context, including the plan, to Redis.
     """
     try:
+        # --- MODIFICATION: Add original_user_message to the context ---
+        # This is needed for the learning cycle later.
+        # We also add the full request to be able to reconstruct the history.
+        full_request_data = request.model_dump()
+        
         action = await agent_orchestrator.process_user_message(db=db, request=request)
+
+        base_context_to_save = {
+            "bot_id": request.bot_id,
+            "full_request": full_request_data, # Store the entire initial request
+        }
 
         if isinstance(action, chat_schemas.AcknowledgeAndExecuteResponse):
             context_to_save = {
-                "bot_id": request.bot_id,
-                "history": [msg.model_dump() for msg in request.history],
+                **base_context_to_save,
                 "plan": action.plan.model_dump() if action.plan else None,
                 "tool_definitions": action.tool_definitions if action.tool_definitions else []
             }
@@ -56,8 +66,7 @@ async def process_message(
             )
         elif isinstance(action, chat_schemas.SynthesizeResponse):
             context_to_save = {
-                "bot_id": request.bot_id,
-                "history": [msg.model_dump() for msg in request.history],
+                **base_context_to_save,
                 "plan": None,
                 "tool_definitions": []
             }
@@ -83,6 +92,7 @@ async def stream_response(
     """
     This endpoint now retrieves a pre-computed plan from Redis, executes it,
     and streams the final synthesized response.
+    At the end of a successful stream, it triggers the ACE learning task.
     """
     context_key = f"chat_context:{message_id}"
     context_data = redis_client.get(context_key)
@@ -91,7 +101,15 @@ async def stream_response(
     
     context = json.loads(context_data)
     bot_id = context.get("bot_id")
-    history_data = context.get("history", [])
+    
+    # --- MODIFICATION: Reconstruct request from stored data ---
+    full_request_data = context.get("full_request")
+    if not full_request_data:
+        raise HTTPException(status_code=500, detail="Invalid context: full_request missing.")
+    
+    reconstructed_request = chat_schemas.ProcessMessageRequest.model_validate(full_request_data)
+    history_data = [msg.model_dump() for msg in reconstructed_request.history]
+    
     plan_data = context.get("plan")
     tool_definitions = context.get("tool_definitions", [])
 
@@ -113,10 +131,11 @@ async def stream_response(
         logger.info(f"No execution plan found for message {message_id}, proceeding directly to synthesizer.")
 
     async def event_generator():
+        final_response_content = ""
+        stream_successful = False
         try:
             logger.info(f"Starting synthesis phase for message {message_id}")
             
-            # MODIFICATION: Use the new synthesis phase router instead of a direct call.
             async for chunk in agent_orchestrator.run_synthesis_phase(
                 bot=bot,
                 global_settings=global_settings,
@@ -126,9 +145,12 @@ async def stream_response(
                 if await request.is_disconnected():
                     logger.warning("Client disconnected, stopping stream.")
                     break
+                
+                final_response_content += chunk
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             
             logger.info(f"Synthesis stream finished for message {message_id}")
+            stream_successful = True
 
         except Exception as e:
             logger.error(f"Error during streaming for message {message_id}: {e}", exc_info=True)
@@ -137,6 +159,18 @@ async def stream_response(
         finally:
             logger.info(f"Cleaning up Redis context for message_id: {message_id}")
             redis_client.delete(context_key)
+
+            # --- MODIFICATION: Trigger ACE learning cycle ---
+            if stream_successful and final_response_content:
+                logger.info(f"ACE: Triggering learning cycle for bot {bot_id} on successful interaction.")
+                interaction_context = {
+                    "history": history_data,
+                    "final_response": final_response_content
+                }
+                learn_from_interaction.delay(
+                    bot_id=bot_id,
+                    interaction_context_json=json.dumps(interaction_context)
+                )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -151,11 +185,9 @@ async def archive_conversation(
     """
     logger.info(f"Archivist received conversation for user {request.user_display_name}")
     try:
-        # MODIFIED: Fetch bot and global settings to pass to the archivist
         bot = crud_bots.get_bot(db, request.bot_id)
         if not bot:
             logger.error(f"Archivist: Bot with ID {request.bot_id} not found.")
-            # We still return a 202 to not block the client, but log the error
             return {"message": "Accepted, but bot not found."}
 
         global_settings = crud_settings.get_global_settings(db)

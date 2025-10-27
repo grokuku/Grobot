@@ -11,14 +11,33 @@ from datetime import datetime
 from croniter import croniter
 
 from app.database.sql_session import SessionLocal
-from app.database import crud_user_notes, crud_workflows, crud_mcp
-# NEW: Import the SQLAlchemy model directly
+# MODIFIED: Added crud_bots and crud_settings
+from app.database import crud_user_notes, crud_workflows, crud_mcp, crud_bots, crud_settings
 from app.database.sql_models import LLMEvaluationRun, Workflow, Trigger
 from app.schemas import chat_schemas
 from app.core.agents.archivist import run_archivist
-# MODIFIED: Only import llm_manager itself, not a non-existent attribute
+# MODIFIED: Import llm_manager and its LLMConfig
 from app.core import llm_manager
 from app.schemas.settings_schema import LLMEvaluationRunCreate
+
+# --- ACE Framework Imports ---
+# NOTE: These imports assume the ace-framework is installed and structured this way.
+try:
+    from ace.playbook import Playbook
+    from ace.roles import Reflector, Curator
+    from ace.adaptation import TaskEnvironment
+    from ace.llm_providers.lite_llm import LiteLLMClient
+    ACE_INSTALLED = True
+except ImportError:
+    ACE_INSTALLED = False
+    # Define dummy classes if ACE is not installed to avoid server crashes
+    class Playbook: pass
+    class Reflector: pass
+    class Curator: pass
+    class TaskEnvironment: pass
+    class LiteLLMClient: pass
+# --- End ACE Imports ---
+
 
 # Configuration du logging pour les tâches Celery
 logger = logging.getLogger(__name__)
@@ -423,3 +442,124 @@ def run_llm_evaluation(self, evaluation_request_data: dict):
                 db.commit()
     finally:
         db.close()
+
+# --- START: ACE Integration (Phase 1) ---
+
+# Define a custom TaskEnvironment for self-reflection
+class SelfReflectionEnvironment(TaskEnvironment):
+    """
+    An ACE TaskEnvironment for a bot to reflect on its own performance
+    in a given interaction without external ground truth.
+    """
+    def __init__(self, interaction_context: dict):
+        self.history = interaction_context.get("history", [])
+        self.final_response = interaction_context.get("final_response", "")
+        if not self.history or not self.final_response:
+            raise ValueError("Interaction context must contain 'history' and 'final_response'")
+
+    def get_task_prompt(self) -> str:
+        """
+        Formats the entire interaction as a single block of text
+        for the Reflector to analyze.
+        """
+        formatted_history = "\n".join([f"{msg.get('role', 'unknown')}: {msg.get('content', '')}" for msg in self.history])
+        return (
+            "Please analyze the following conversation and the bot's final response. "
+            "Identify key insights about what made the response good or bad, and suggest "
+            "specific, reusable strategies for the future.\n\n"
+            "--- Conversation History ---\n"
+            f"{formatted_history}\n\n"
+            "--- Bot's Final Response ---\n"
+            f"{self.final_response}"
+        )
+
+    def get_feedback(self, generated_response: str) -> tuple[float, str]:
+        """
+        In self-reflection mode, this method is not used as there is no
+        external feedback loop. The initial analysis is done by the Reflector
+        on the get_task_prompt() content.
+        """
+        return 0.0, "No external feedback available in self-reflection mode."
+
+
+@shared_task(ignore_result=True)
+def learn_from_interaction(bot_id: int, interaction_context_json: str):
+    """
+    A Celery task that uses the ACE framework to learn from a completed
+    conversation and update the bot's playbook.
+    """
+    if not ACE_INSTALLED:
+        logger.warning("ACE framework not installed. Skipping learn_from_interaction task.")
+        return
+
+    logger.info(f"ACE: Starting learning cycle for bot_id: {bot_id}")
+    db: Session = SessionLocal()
+    try:
+        # 1. Load data and configuration
+        interaction_context = json.loads(interaction_context_json)
+        bot = crud_bots.get_bot(db, bot_id)
+        if not bot:
+            logger.error(f"ACE: Bot with id {bot_id} not found.")
+            return
+        
+        global_settings = crud_settings.get_global_settings(db)
+        llm_config = llm_manager.get_llm_config_for_category(
+            bot=bot,
+            global_settings=global_settings,
+            category='output_client' # Use a powerful model for reflection
+        )
+
+        # 2. Setup ACE components
+        llm_client = LiteLLMClient(
+            model=llm_config.model_name,
+            api_base=llm_config.server_url
+        )
+        reflector = Reflector(llm_client)
+        curator = Curator(llm_client)
+        environment = SelfReflectionEnvironment(interaction_context)
+
+        # 3. Load or create the bot's playbook
+        playbook_dir = "/app/data/playbooks"
+        os.makedirs(playbook_dir, exist_ok=True)
+        playbook_path = os.path.join(playbook_dir, f"{bot_id}.json")
+        
+        if os.path.exists(playbook_path):
+            logger.info(f"ACE: Loading existing playbook from {playbook_path}")
+            playbook = Playbook.from_file(playbook_path)
+        else:
+            logger.info(f"ACE: Creating new playbook for bot {bot_id}")
+            playbook = Playbook(bot_id=str(bot_id), name=f"{bot.name}'s Playbook")
+
+        # 4. Run the learning cycle: Reflect -> Curate
+        task_prompt = environment.get_task_prompt()
+        
+        # The 'Reflector' analyzes the outcome
+        reflection = reflector.reflect(
+            playbook=playbook,
+            task_prompt=task_prompt,
+            # In this phase, the bot's response is the subject of analysis
+            llm_response=interaction_context['final_response']
+        )
+        logger.info(f"ACE: Reflector produced key insight: '{reflection.key_insight}'")
+
+        # The 'Curator' decides on playbook updates
+        delta_batch = curator.curate(
+            playbook=playbook,
+            reflection=reflection
+        )
+        
+        if not delta_batch.operations:
+            logger.info("ACE: Curator decided no changes are needed for the playbook.")
+        else:
+            logger.info(f"ACE: Curator proposed {len(delta_batch.operations)} changes. Applying to playbook.")
+            # 5. Apply changes and save the playbook
+            playbook.apply_delta_batch(delta_batch)
+            playbook.save_to_file(playbook_path)
+            logger.info(f"ACE: Playbook for bot {bot_id} successfully updated and saved.")
+
+    except Exception as e:
+        logger.error(f"ACE: An error occurred during the learning cycle for bot {bot_id}: {e}", exc_info=True)
+    finally:
+        db.close()
+
+# --- END: ACE Integration (Phase 1) ---

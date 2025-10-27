@@ -40,6 +40,7 @@ Pillow
 
 # --- NEW: Ollama client library ---
 ollama>=0.5.3
+litellm
 
 # --- NEW: Agentic Context Engine ---
 ace-framework
