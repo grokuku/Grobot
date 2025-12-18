@@ -139,6 +139,9 @@ Your response: "Of course! What location would you like me to check the weather 
 """
 
 PLANNER_SYSTEM_PROMPT = """Your SOLE mission is to create a JSON execution plan based on a user's request and a set of tools with their parameters already extracted.
+
+{ace_playbook}
+
 You MUST NOT be creative. You MUST NOT invent tools or steps.
 Your task is to determine the correct order of execution and identify dependencies between tools.
 
@@ -175,7 +178,6 @@ Your response:
 }}
 """
 
-# === MODIFICATION START: Extreme re-shielding of the Acknowledger prompt ===
 ACKNOWLEDGER_SYSTEM_PROMPT = """You are an acknowledgement message generator.
 Your personality is: {bot_personality}.
 
@@ -203,7 +205,6 @@ Bad Example (FORBIDDEN): "The time in Montreal is 10:22 AM."
 
 Your output MUST be ONLY the text of the message and nothing else.
 """
-# === MODIFICATION END ===
 
 # ==============================================================================
 # AGENTS: Synthesizers
@@ -213,6 +214,8 @@ SYNTHESIZER_SYSTEM_PROMPT = """{bot_personality}
 
 Your name is {bot_name}.
 Your mission is to formulate a final, natural language response to the user, based on the conversation history. This is a purely conversational scenario where no tools were needed.
+
+{ace_playbook}
 
 ---
 CRITICAL RULES OF ENGAGEMENT:
@@ -235,6 +238,8 @@ TOOL_RESULT_SYNTHESIZER_SYSTEM_PROMPT = """{bot_personality}
 Your name is {bot_name}.
 Your primary mission is to formulate a creative and natural response to the user, incorporating the results of the tools that were just executed.
 
+{ace_playbook}
+
 ---
 CRITICAL RULES OF ENGAGEMENT:
 1. **PERSONALITY FIRST:** Your tone, style, and choice of words MUST strictly match the personality defined at the very top. This is your most important goal.
@@ -256,7 +261,7 @@ Your Response: "Here's the image you asked for. Don't spend all day staring at i
 
 
 # ==============================================================================
-# AGENT: Archivist (Restored to fix startup error)
+# AGENT: Archivist
 # ==============================================================================
 
 ARCHIVIST_SYSTEM_PROMPT = """Your role is to act as an archivist. Your sole mission is to extract key, long-term facts from a conversation and format them for storage.

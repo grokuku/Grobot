@@ -40,7 +40,8 @@ def _format_validated_tools_for_prompt(validated_params: ParameterExtractorResul
 
 async def run_planner(
     history: List[ChatMessage],
-    validated_parameters: ParameterExtractorResult
+    validated_parameters: ParameterExtractorResult,
+    playbook_content: str = ""
 ) -> PlannerResult:
     """
     Runs the Planner agent to create a step-by-step execution plan.
@@ -49,6 +50,7 @@ async def run_planner(
         history: The conversation history, for overall context.
         validated_parameters: The output from the Parameter Extractor, confirming
                                 all parameters are available.
+        playbook_content: The ACE playbook content as a formatted string.
 
     Returns:
         A PlannerResult object containing the ordered execution plan.
@@ -64,7 +66,9 @@ async def run_planner(
     available_blocks_prompt = _format_validated_tools_for_prompt(validated_parameters)
 
     # 2. Combine the base prompt with the dynamic section.
-    system_prompt = PLANNER_SYSTEM_PROMPT + "\n\n" + available_blocks_prompt
+    # INJECTION OF ACE PLAYBOOK
+    base_prompt = PLANNER_SYSTEM_PROMPT.format(ace_playbook=playbook_content)
+    system_prompt = base_prompt + "\n\n" + available_blocks_prompt
 
     messages = [msg.model_dump() for msg in history]
 

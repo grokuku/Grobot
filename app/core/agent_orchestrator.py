@@ -1,9 +1,9 @@
-# app/core/agent_orchestrator.py
 import logging
 from typing import Union, List, Dict, Any, Optional, AsyncGenerator
 import httpx
 import asyncio
 import json
+import os # MODIFIED: Added os for file path handling
 from pydantic import BaseModel, Field
 
 # NEW: Add websockets for handling MCP streams
@@ -28,6 +28,16 @@ from app.schemas.chat_schemas import (
 # Database CRUD Imports
 from app.database import crud_bots, crud_mcp, crud_settings, sql_models
 
+# --- MODIFICATION START: ACE Framework Import ---
+try:
+    from ace.playbook import Playbook
+    ACE_INSTALLED = True
+except ImportError:
+    ACE_INSTALLED = False
+    # Dummy class to prevent runtime errors if ACE is not present
+    class Playbook: pass
+# --- MODIFICATION END ---
+
 logger = logging.getLogger(__name__)
 
 # --- Internal Pydantic models for response validation ---
@@ -38,6 +48,29 @@ class GatekeeperResponse(BaseModel):
 
 class ToolIdentifierResponse(BaseModel):
     required_tools: List[str]
+
+# --- Helper for Playbook Loading ---
+
+def _load_bot_playbook_content(bot_id: int) -> str:
+    """
+    Loads the ACE Playbook for the given bot and returns it formatted as a prompt string.
+    Returns an empty string if ACE is not installed or the playbook doesn't exist.
+    """
+    if not ACE_INSTALLED:
+        return ""
+    
+    # Path matches the one used in tasks.py
+    playbook_path = f"/app/data/playbooks/{bot_id}.json"
+    
+    if not os.path.exists(playbook_path):
+        return ""
+        
+    try:
+        playbook = Playbook.from_file(playbook_path)
+        return playbook.as_prompt()
+    except Exception as e:
+        logger.error(f"Failed to load ACE playbook for bot {bot_id}: {e}")
+        return ""
 
 # --- Orchestrator Logic ---
 
@@ -55,6 +88,9 @@ async def process_user_message(
         return StopResponse(reason=f"Bot with ID {request.bot_id} not found.")
     
     global_settings = crud_settings.get_global_settings(db)
+    
+    # MODIFICATION: Load Playbook content early for use in Planner
+    playbook_content = _load_bot_playbook_content(bot.id)
 
     # --- 1. Gatekeeper Step (Category: Decisional) ---
     bypass_gatekeeper = request.is_direct_message or request.is_direct_mention
@@ -79,17 +115,32 @@ async def process_user_message(
         logger.info(f"Bypassing Gatekeeper due to direct message or mention.")
 
     # --- 2. Tool Identification Step (Category: Tools) ---
+    logger.info("--- STARTING TOOL IDENTIFICATION STEP ---")
     available_tools = await get_available_tools_for_bot(db, bot.id)
+    logger.debug(f"Available tools for bot {bot.id}: {[t['name'] for t in available_tools]}")
     
     tools_config = llm_manager.resolve_llm_config(bot, global_settings, llm_manager.LLM_CATEGORY_TOOLS)
+    logger.info(f"Tool Identifier using model: {tools_config.model_name} at {tools_config.server_url}")
+
     tools_list_str = "\n".join([f"- {tool['name']}: {tool['description']}" for tool in available_tools])
     tool_id_prompt = prompts.TOOL_IDENTIFIER_SYSTEM_PROMPT.format(tools_list=tools_list_str)
-    response_str = await llm_manager.call_llm(tools_config, tool_id_prompt, request.history, json_mode=True)
+    
+    logger.info("Calling LLM for Tool Identifier...")
+    try:
+        response_str = await llm_manager.call_llm(tools_config, tool_id_prompt, request.history, json_mode=True)
+        logger.info("LLM Response received for Tool Identifier.")
+        logger.debug(f"Raw Tool Identifier Response: {response_str}")
+    except Exception as llm_error:
+        logger.error(f"CRITICAL ERROR during Tool Identifier LLM call: {llm_error}", exc_info=True)
+        # Fail safe to allow flow to continue if possible, or re-raise
+        # For now, let's treat it as an empty response (no tools) to unblock the bot
+        response_str = "{}"
 
     try:
         tool_id_result = ToolIdentifierResponse.model_validate_json(response_str)
         available_tool_names = {tool['name'] for tool in available_tools}
         required_tool_names = [name for name in tool_id_result.required_tools if name in available_tool_names]
+        logger.info(f"Identified required tools: {required_tool_names}")
     except Exception as e:
         logger.error(f"Failed to parse Tool Identifier response: {e}. Assuming no tools. Raw: '{response_str}'")
         required_tool_names = []
@@ -124,7 +175,10 @@ async def process_user_message(
 
     # --- 4. Planning Step (Category: Tools) ---
     logger.info("All required parameters are present. Proceeding to planning.")
-    planner_prompt = prompts.PLANNER_SYSTEM_PROMPT # No formatting needed
+    
+    # MODIFICATION: Inject Playbook content into Planner prompt
+    planner_prompt = prompts.PLANNER_SYSTEM_PROMPT.format(ace_playbook=playbook_content)
+    
     planner_messages = [{"role": "user", "content": f"Create a plan for these tools and parameters: {param_ext_result.model_dump_json()}"}]
     response_str = await llm_manager.call_llm(tools_config, planner_prompt, planner_messages, json_mode=True)
 
@@ -176,13 +230,17 @@ async def run_synthesis_phase(
     Routes to the appropriate synthesizer based on whether tools were executed.
     This is the new entry point for the final response generation phase.
     """
+    # MODIFICATION: Load Playbook content for Synthesis
+    playbook_content = _load_bot_playbook_content(bot.id)
+
     if tool_results:
         logger.info("Tool results are present. Routing to Tool Result Synthesizer.")
         async for chunk in synthesizer.run_tool_result_synthesizer(
             bot=bot,
             global_settings=global_settings,
             history=history,
-            tool_results=tool_results
+            tool_results=tool_results,
+            playbook_content=playbook_content # Pass playbook
         ):
             yield chunk
     else:
@@ -191,7 +249,8 @@ async def run_synthesis_phase(
             bot=bot,
             global_settings=global_settings,
             history=history,
-            tool_results=tool_results
+            tool_results=tool_results,
+            playbook_content=playbook_content # Pass playbook
         ):
             yield chunk
 

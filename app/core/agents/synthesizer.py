@@ -57,12 +57,13 @@ def _format_tool_results_for_prompt(tool_results: List[Dict[str, Any]]) -> str:
     
     return prompt
 
-# MODIFIED: The function signature and logic are completely updated
+# MODIFIED: Added playbook_content argument and injection
 async def run_synthesizer(
     bot: Bot,
     global_settings: GlobalSettings,
     history: List[Dict[str, Any]],
-    tool_results: List[Dict[str, Any]] # Kept for signature consistency, but ignored
+    tool_results: List[Dict[str, Any]], # Kept for signature consistency, but ignored
+    playbook_content: str = ""
 ) -> AsyncGenerator[str, None]:
     """
     Runs the conversational Synthesizer agent for scenarios where NO tools were used.
@@ -76,9 +77,11 @@ async def run_synthesizer(
         )
 
         # 2. Prepare prompts and messages for conversation
+        # INJECTION OF ACE PLAYBOOK
         system_prompt = llm_manager.prompts.SYNTHESIZER_SYSTEM_PROMPT.format(
             bot_name=bot.name,
-            bot_personality=bot.personality
+            bot_personality=bot.personality,
+            ace_playbook=playbook_content
         )
 
         logger.info(f"Conversational Synthesizer calling LLM with config: {output_config.model_dump()}")
@@ -96,11 +99,13 @@ async def run_synthesizer(
         yield "I'm sorry, I encountered an error while trying to formulate my response."
 
 
+# MODIFIED: Added playbook_content argument and injection
 async def run_tool_result_synthesizer(
     bot: Bot,
     global_settings: GlobalSettings,
     history: List[Dict[str, Any]],
-    tool_results: List[Dict[str, Any]]
+    tool_results: List[Dict[str, Any]],
+    playbook_content: str = ""
 ) -> AsyncGenerator[str, None]:
     """
     Runs the Tool Result Synthesizer agent to report tool execution results to the user.
@@ -115,9 +120,12 @@ async def run_tool_result_synthesizer(
 
         # 2. Prepare prompts and messages using the specialized prompt
         tool_results_prompt_section = _format_tool_results_for_prompt(tool_results)
+        
+        # INJECTION OF ACE PLAYBOOK
         system_prompt = llm_manager.prompts.TOOL_RESULT_SYNTHESIZER_SYSTEM_PROMPT.format(
             bot_name=bot.name,
-            bot_personality=bot.personality
+            bot_personality=bot.personality,
+            ace_playbook=playbook_content
         )
 
         final_prompt_messages = list(history)

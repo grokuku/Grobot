@@ -1,3 +1,6 @@
+####
+# FILE: discord_bot_launcher/client/api_client.py
+####
 import logging
 import json
 from typing import List, Dict, Any, Optional, AsyncGenerator
@@ -157,7 +160,8 @@ class APIClient:
         url = f"{self._base_url}{stream_url}"
         logger.info(f"Connecting to SSE stream at {url}")
         try:
-            async with self._client.stream("GET", url) as response:
+            # surgical fix: specific timeout for streaming to handle LLM latency
+            async with self._client.stream("GET", url, timeout=httpx.Timeout(600.0, read=None)) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if line.startswith("data:"):
@@ -180,7 +184,8 @@ class APIClient:
             yield f"\n\n_Sorry, I couldn't retrieve the final response. {error_msg}_"
         except Exception as e:
             logger.error(f"An unexpected error occurred during streaming: {e}", exc_info=True)
-            yield "\n\n_Sorry, a critical error occurred while retrieving the final response._"
+            # surgical fix: show the exact error type and message for debugging
+            yield f"\n\n_Sorry, a critical error occurred while retrieving the final response ({type(e).__name__}: {e})._"
 
     async def archive_conversation(
         self,

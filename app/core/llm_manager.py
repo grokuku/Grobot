@@ -190,6 +190,7 @@ async def call_llm_stream(
     logger.info(f"Calling LLM Stream: Server='{config.server_url}', Model='{config.model_name}', Ctx='{config.context_window}'")
     full_response_content = ""
     try:
+        logger.debug(f"Initializing Ollama chat stream for model {config.model_name}...")
         client = ollama.AsyncClient(host=config.server_url)
         
         # The ollama client expects a list of dicts, not Pydantic models
