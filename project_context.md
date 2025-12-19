@@ -1,3 +1,5 @@
+--- START OF FILE project_context.md ---
+
 ---
 ### AXIOMES FONDAMENTAUX DE LA SESSION ###
 ---
@@ -62,7 +64,7 @@ L'objectif principal est une **administrabilité dynamique** via une **interface
 6.  **Gestion du Schéma de Base de Données :** Alembic est la **seule autorité** pour la gestion du schéma de la base de données. L'appel `Base.metadata.create_all()` n'est pas utilisé en production pour éviter tout conflit. Pour les relations "plusieurs-à-plusieurs" avec des données additionnelles (ex: la configuration d'un outil pour un bot), le patron de conception **Association Object** de SQLAlchemy est utilisé.
 7.  **Structure des Chemins dans le Conteneur `app` :** En raison de la configuration Docker, le répertoire `app` du projet est copié dans le répertoire `/app` du conteneur. Par conséquent, le chemin d'accès absolu pour les fichiers du projet (comme `alembic.ini`) à l'intérieur du conteneur est systématiquement `/app/app/...`. Cette convention doit être respectée pour toutes les commandes `docker-compose exec`.
 8.  **Architecture de Prompt Hybride :** Le prompt système final envoyé au LLM est assemblé dynamiquement par la logique métier. Il combine des **directives fondamentales non-modifiables** (codées en dur pour tous les bots) avec le **contexte d'exécution dynamique** (serveur/salon Discord, fichiers joints, mémoire LTM) et la **personnalité spécifique au bot** (stockée en base de données).
-9.  **Agentique et Exécution des Outils Côté Client :** La boucle de l'agent (LLM -> appel d'outil -> LLM) est gérée par le client, c'est-à-dire `bot_process.py`, et non par le backend. Cette approche garantit la **sécurité maximale** (le token Discord ne quitte jamais son processus) et permet l'implémentation d'**outils internes** qui interagissent directement avec l'objet client `discord.py`. Les outils externes (MCP) sont appelés via un **endpoint API proxy dédié (`/api/tools/call`)** qui centralise la logique de communication.
+9.  **Agentique et Exécution des Outils Côté Client :** La boucle de l'agent (LLM -> appel d'outil -> LLM) est gérée par le client, c'est-à-dire `bot_process.py`, et non par le backend. Cette approche garantit la **sécurité maximale** (le token Discord ne quitte jamais son processus) et permet l'implémentation d'**outils internes** qui interagissent directement avec l'objet client `discord.py`. Les outils externes (MCP) sont appelés via un **endpoint API proxy dédié (`/api/tools/call`)** qui centralise la logique de communication standardisée.
 10. **Mémoire Utilisateur à Deux Composants :** La connaissance persistante du bot sur les utilisateurs est divisée en deux types de données distincts : les **Profils Utilisateurs** (contenant des directives comportementales modifiables par un administrateur) et les **Notes Utilisateurs** (contenant des faits textuels avec un score de fiabilité, que le bot peut créer et lire lui-même via ses outils).
 11. **Architecture d'Agent Spécialisé ("Chaîne de Montage") :** Pour fiabiliser l'utilisation des outils, le traitement d'un message est decomposé en une série d'appels LLM spécialisés. Chaque LLM a un rôle unique et défini (Gardien, Planificateur, Synthétiseur, etc.). L'orchestration de cette chaîne est gérée par le backend.
 12. **Spécialisation des Modèles LLM par Catégorie de Tâche :** Pour optimiser les performances et les coûts, la configuration LLM est segmentée en trois catégories fonctionnelles, chacune pouvant être assignée à un serveur, un modèle et une fenêtre de contexte spécifiques. Ces catégories sont :
@@ -85,6 +87,7 @@ L'objectif principal est une **administrabilité dynamique** via une **interface
 *   **Interaction LLM :** `requests`, `httpx`, `ollama-python`
 *   **Client Discord :** `discord.py`
 *   **Tâches Asynchrones :** Celery, Redis
+*   **Standard Outils (MCP) :** `mcp` (SDK), `mcp-use` (Client), `starlette` (Transport SSE)
 
 ### 3.2. Arborescence Complète du Projet et Rôle des Fichiers
 
@@ -233,101 +236,23 @@ L'objectif principal est une **administrabilité dynamique** via une **interface
 
 ## 6. Documentation : Le Standard Model Context Protocol (MCP)
 
-*   **Date d'Adoption :** 2025-08-15
-*   **Source de Vérité :** [Dépôt GitHub Officiel](https://github.com/modelcontextprotocol/modelcontextprotocol) et [Documentation](https://modelcontextprotocol.info/docs/)
+*   **Date d'Adoption Stricte :** 2025-12-19
+*   **Source de Vérité :** [Dépôt GitHub Officiel](https://github.com/modelcontextprotocol/modelcontextprotocol)
+*   **Architecture :** GroBot utilise strictement le SDK officiel `mcp` (pour les serveurs) et `mcp-use` (pour le client backend).
 
-Cette section annule et remplace toute implémentation précédente d'outils. Le projet adopte le standard ouvert et officiel MCP pour l'intégration des outils.
+### 6.1. Principes Techniques
 
-### 6.1. Principes Fondamentaux
+1.  **Transport SSE et Starlette :** La communication utilise **Server-Sent Events (SSE)**.
+    *   **Spécificité Starlette :** Lors de l'utilisation de Starlette avec `mcp`, l'endpoint recevant le `POST` des messages doit retourner un objet `Response` qui ne fait rien (NoOp), car le SDK `mcp` gère déjà l'envoi de la réponse ASGI. Sinon, une erreur "Double Response" se produit.
+    *   **Routage :** Il est recommandé d'autoriser la méthode `POST` sur l'endpoint de handshake (ex: `/mcp`) en plus de l'endpoint dédié aux messages, pour une compatibilité maximale avec les clients.
+2.  **Bibliothèques Implémentées :**
+    *   **Serveurs (Outils) :** `mcp` + `starlette` (Ex: `grobot_tools/time_tool/server.py`).
+    *   **Client (Backend) :** `mcp-use` est utilisé par l'API (`tools_api.py`), l'orchestrateur (`agent_orchestrator.py`) et les workers (`tasks.py`).
+3.  **Découverte Robuste :** La découverte des outils (`tools/list`) doit être effectuée serveur par serveur de manière isolée (`try/except` dans une boucle) pour éviter qu'un seul serveur défaillant ne bloque l'initialisation de tous les outils du bot.
 
-1.  **Communication Standardisée :** Toutes les interactions entre un client (notre `bot_process`) et un serveur d'outils (ex: `mcp_time_tool`) **DOIVENT** utiliser le protocole **JSON-RPC 2.0**.
-2.  **Méthodes RPC Spécifiées :** Le standard définit des noms de méthodes précis que les serveurs doivent implémenter et que les clients doivent appeler. Les deux méthodes fondamentales pour les outils sont `tools/list` et `tools/call`.
-3.  **Définition via JSON Schema :** La "signature" d'un outil (son nom, sa description, ses paramètres et leurs types) est décrite de manière structurée via une JSON Schema. C'est ce qui permet une découverte véritablement automatique et fiable.
+### 6.2. Format de Définition d'un Outil
 
-### 6.2. Méthodes RPC Standard
-
-#### 6.2.1. `tools/list`
-
-*   **Rôle :** Permet à client de découvrir les outils disponibles sur un serveur.
-*   **Requête du Client :**
-    ```json
-    {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/list",
-        "params": {}
-    }
-    ```
-*   **Réponse du Serveur :**
-    ```json
-    {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "result": {
-            "tools": [
-                // ... liste des définitions d'outils ...
-            ]
-        }
-    }
-    ```
-
-#### 6.2.2. `tools/call`
-
-*   **Rôle :** Permet à client d'exécuter un outil spécifique avec des arguments.
-*   **Requête du Client :**
-    ```json
-    {
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/call",
-        "params": {
-            "name": "tool_name_to_call",
-            "arguments": {
-                "param1_name": "value1",
-                "param2_name": 123
-            }
-        }
-    }
-    ```
-*   **Réponse du Serveur :**
-    ```json
-    {
-        "jsonrpc": "2.0",
-        "id": 2,
-        "result": {
-            "content": [
-                {
-                    "type": "text",
-                    "text": "The result of the tool execution."
-                }
-            ]
-        }
-    }
-    ```
-    
-### 6.3. Format de Définition d'un Outil
-
-Chaque outil retourné par `tools/list` **DOIT** suivre le format JSON Schema suivant, avec la clé `inputSchema` pour les paramètres.
-
-**Exemple pour `get_current_time` :**
-```json
-{
-    "name": "get_current_time",
-    "title": "Get Current Time",
-    "description": "Returns the current server date and time. Use this for any questions about the current time, date, or day of the week.",
-    "inputSchema": {
-        "type": "object",
-        "properties": {}
-    }
-}
-```
-
-### 6.4. Implémentations MCP Connues
-
-Pour garantir l'interopérabilité, GroBot s'appuie sur des serveurs d'outils qui respectent le standard MCP. La documentation de référence pour ces serveurs est essentielle pour comprendre les outils disponibles.
-
-*   **MCP_GenImage:** Service avancé de génération d'images.
-    *   *[Lien vers le project_context.md de MCP_GenImage à insérer ici]*
+Chaque outil retourné respecte le JSON Schema standard. Le backend injecte désormais la liste des arguments attendus directement dans la description de l'outil fournie au LLM (Agent `Tool Identifier`), pour améliorer la prise de décision des modèles moins performants.
 
 ---
 
@@ -336,81 +261,34 @@ Pour garantir l'interopérabilité, GroBot s'appuie sur des serveurs d'outils qu
 ### 7.1. Bugs Connus et Régression (Issues Actuellement Ouvertes)
 
 *   **Incohérence Schéma Base de Données (`WorkflowStep`)**
-    *   **Description :** Le champ `mcp_server_id` de la table `workflow_steps` est défini comme `NOT NULL` en base (suite à une ancienne migration), alors que le modèle SQLAlchemy le définit comme `Nullable` pour supporter les outils internes (ex: `post_to_discord`).
-    *   **Impact :** Impossible de créer ou d'exécuter des workflows utilisant des outils internes.
     *   **Statut :** MIGRATION PROPOSÉE (`3e4f5a6b7c8d_fix_workflow_steps_nullable.py`). À appliquer.
 
-*   **Timeout de la commande `/prompt_generator` et Échec de l'Autocomplétion des Styles (`app/api/tools_api.py`, `discord_bot_launcher/client/event_handler.py`)**
-    *   **Description :** La commande `/prompt_generator` échoue par intermittence avec une erreur "Cette interaction a échoué". Simultanément, la liste des styles pour l'autocomplétion est souvent vide.
+*   **Timeout de la commande `/prompt_generator` et Échec de l'Autocomplétion des Styles**
     *   **Statut :** EN COURS D'INVESTIGATION.
 
-*   **Problème d'Interface Utilisateur dans l'Onglet "Memory" (`frontend/src/ui.js`, `app/api/chat_api.py`)**
-    *   **Description :** L'onglet "Memory" ne fonctionne pas (code commenté ou appel incorrect).
+*   **Problème d'Interface Utilisateur dans l'Onglet "Memory"**
     *   **Statut :** NON RÉSOLU.
 
-*   **Outils non Fonctionnels dans l'Interface de Test (`frontend/src/ui.js`)**
-    *   **Description :** Les outils (ex: `generate_image`) ne fonctionnent pas dans le Test Chat Web.
-    *   **Statut :** NON RÉSOLU.
+*   **Outils non Fonctionnels dans l'Interface de Test (Web)**
+    *   **Statut :** RÉSOLU (Correction Server-Side Starlette + Routage + Prompting + Orchestrateur).
 
-*   **Suppression de Bot Impossible (`frontend/src/ui.js`, `app/api/bots_api.py`)**
-    *   **Description :** Pas de bouton ou de route API connectée pour supprimer un bot.
+*   **Suppression de Bot Impossible**
     *   **Statut :** NON RÉSOLU.
 
 ### 7.2. Fonctionnalités Récemment Implémentées
 
+*   **Stabilisation Critique des Outils MCP :** Correction du conflit ASGI ("Double Response") dans Starlette, implémentation d'une découverte d'outils tolérante aux pannes, enrichissement des prompts pour le choix des outils (inclusion des arguments), correction des données de connexion en base (typo `/mpc`) et amélioration de l'outil de temps pour parser les offsets (ex: UTC+2).
+*   **Migration Complète vers le Standard MCP (SSE + mcp-use)** : Refonte totale de la couche d'outils.
 *   **Backend Configuration LLM par Catégorie**
-    *   **Statut :** IMPLÉMENTÉ.
-
 *   **Implémentation de l'Enrichissement du Contexte (ACE - Phase 2)**
-    *   **Statut :** IMPLÉMENTÉ.
-
 *   **Implémentation de l'Apprentissage Continu (ACE - Phase 1)**
-    *   **Statut :** IMPLÉMENTÉ.
-
 *   **Gestion Fine des Permissions par Salon**
-    *   **Statut :** IMPLÉMENTÉ.
-
-*   **Implémentation du Logging des Interactions LLM**
-    *   **Statut :** IMPLÉMENTÉ.
-
-*   **Implémentation de l'Évaluation des Modèles LLM (Backend & Frontend)**
-    *   **Statut :** IMPLÉMENTÉ.
-
-### 7.3. Bugs Récemment Résolus
-
-*   **Bot Silencieux après l'appel `Tool Identifier` et Erreurs Critiques de Stream (Session 2025-12-18)**
-    *   **Analyse :** Deux causes identifiées. 1) Erreur de syntaxe dans `agent_orchestrator.py` accédant à des attributs inexistants de `LLMConfig`. 2) Timeout de lecture HTTP (5s par défaut) trop court pour les temps de réflexion des modèles LLM massifs (24B/32B).
-    *   **Résolution :** Correction de la classe `LLMConfig` et des logs. Configuration de `read=None` (timeout infini sur la lecture) dans le client SSE de `api_client.py`.
-    *   **Statut :** RÉSOLU.
-
-*   **Échec de la Restitution des Résultats d'Outils en Langage Naturel (Images)** : Correction du `Synthesizer` pour gérer les images et balises `[IMAGE_URL:...]`.
-*   **Échec de l'Exécution des Workflows avec Outils Asynchrones** : Support du streaming WebSocket dans les tâches Celery.
-*   **Anonymat de l'Historique de Conversation** : Ajout des noms d'utilisateurs dans le contexte LLM.
-
----
 
 ### 7.5. Plan d'Action pour la Prochaine Session
 
-1.  **Appliquer la Migration de Schéma**
-    *   **Action :** Exécuter ou générer la migration `3e4f5a6b7c8d_fix_workflow_steps_nullable.py` pour corriger la table `workflow_steps`.
-2.  **Réparer l'Interface de Test Chat (Web)**
-    *   **Action :** Corriger `frontend/src/ui.js` pour supporter l'exécution des outils.
-3.  **Investiguer le timeout `/prompt_generator`**
-    *   **Action :** Vérifier si l'augmentation des timeouts côté `api_client` a également stabilisé les commandes slash.
-
----
-
-## 8. ANNEXE : Anciennes Architectures d'Agent (Obsolètes)
-
-> **ATTENTION :** Cette section décrit les anciennes architectures qui ne sont plus en production. Elle est conservée à titre de référence historique uniquement.
-
-### 8.1. Architecture "Chaîne de Montage" Asynchrone (Session 96-121)
-
-Cette architecture utilisait une chaîne de 4 LLM (Gardien, Répartiteur, Synthétiseur, Archiviste) principalement orchestrée par le client `bot_process.py`. Le client gérait la décision d'utiliser des outils, leur exécution (interne ou via proxy), et l'envoi des résultats au Synthétiseur. Elle a été remplacée car la logique de décision était trop monolithique (un seul "Répartiteur") et la gestion de la boucle d'outils par le client était trop complexe.
-
-### 8.2. Architecture Monolithique (Pré-Session 96)
-
-Cette architecture initiale reposait sur un unique appel LLM avec une liste d'outils au format `ollama-python`. Le client `bot_process.py` était responsable de la gestion complète de la boucle "appel LLM -> détection d'appel d'outil -> exécution de l'outil -> second appel LLM avec le résultat". Elle a été abandonnée en raison de sa faible fiabilité pour les tâches complexes et du manque de contrôle sur le raisonnement du LLM.
+1.  **Appliquer la Migration de Schéma :** `fix_workflow_steps_nullable`.
+2.  **Réparer l'Interface de Test Chat (Web) :** Adapter le frontend pour qu'il gère les réponses des outils.
+3.  **Investiguer le problème de suppression de bot.**
 
 ---
 
@@ -419,8 +297,10 @@ Cette architecture initiale reposait sur un unique appel LLM avec une liste d'ou
 *   **Agentic Context Engine (ACE)**
     *   **Nom du Paquet PyPI :** `ace-framework`
     *   **Version lors de l'intégration :** 0.2.0
-    *   **Rôle :** Fournit le cœur de la logique d'apprentissage et d'amélioration continue pour les bots.
 
 *   **LiteLLM**
     *   **Nom du Paquet PyPI :** `litellm`
-    *   **Rôle :** Couche de traduction universelle pour les appels aux modèles de langage utilisée par `ace-framework`.
+
+*   **Model Context Protocol (MCP)**
+    *   **Paquets :** `mcp` (SDK Serveur), `mcp-use` (Client), `starlette` (Serveur Web ASGI).
+    *   **Usage :** Standardisation des interactions avec les outils externes et internes.

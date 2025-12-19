@@ -44,3 +44,7 @@ litellm
 
 # --- NEW: Agentic Context Engine ---
 ace-framework
+
+# --- NEW: MCP Standard Libraries ---
+mcp
+mcp-use

@@ -3,11 +3,15 @@
 ####
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 from typing import List, Any, Dict
 import logging
 import json
 import asyncio
+
+# --- NEW: MCP-Use Import ---
+from mcp_use import MCPClient
+# ---------------------------
 
 from app.database.sql_session import get_db, SessionLocal
 from app.database import crud_mcp, crud_bots
@@ -17,24 +21,18 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# --- NEW FUNCTION ---
+# --- INTERNAL FUNCTION (Optimized) ---
 async def get_all_tools_for_bot_internal(bot_id: int, db: Session) -> List[Dict[str, Any]]:
     """
     Retrieves all tool schemas for a given bot from the database cache.
-
-    This is a fast, internal-facing function that reads from the discovered tools
-    stored in the database for each MCP server associated with the bot.
-    It does NOT perform any network calls.
     """
     bot = crud_bots.get_bot_with_mcp_servers(db, bot_id=bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
 
     all_tools = []
-    # --- FIX START ---
-    # The relationship on the Bot model is named 'mcp_server_associations'.
+    # Use the correct relationship name
     for server_association in bot.mcp_server_associations:
-    # --- FIX END ---
         mcp_server = server_association.mcp_server
         if mcp_server and mcp_server.enabled and mcp_server.discovered_tools_schema:
             for tool_schema in mcp_server.discovered_tools_schema:
@@ -49,7 +47,6 @@ async def get_all_tools_for_bot_internal(bot_id: int, db: Session) -> List[Dict[
 async def force_discover_all_servers():
     """
     Connects to the DB, gets all MCP servers, and triggers discovery for each of them.
-    This runs in a background task and needs its own DB session.
     """
     logger.info("Background task: Starting force-discovery for all MCP servers.")
     db = SessionLocal()
@@ -72,7 +69,6 @@ async def force_discover_all_servers():
 async def background_discovery_task():
     """
     The main loop for the background discovery task.
-    Runs once on startup, then every 30 minutes.
     """
     while True:
         await force_discover_all_servers()
@@ -80,32 +76,51 @@ async def background_discovery_task():
         logger.info(f"Background task: Sleeping for {sleep_duration_seconds / 60} minutes.")
         await asyncio.sleep(sleep_duration_seconds)
 
-# --- HELPER FUNCTION (UNCHANGED) ---
+# --- HELPER FUNCTION (REFACTORED for MCP-Use) ---
 async def _discover_and_update_if_needed(server_model: any, db: Session):
     """
-    Internal helper to perform tool discovery for a single server.
-    Now used by the background task to unconditionally update the cache.
+    Internal helper to perform tool discovery for a single server using MCP-Use.
     """
-    target_url = f"http://{server_model.host}:{server_model.port}{server_model.rpc_endpoint_path}"
-    payload = {"jsonrpc": "2.0", "method": "tools/list", "params": {}, "id": 1}
+    base_url = f"http://{server_model.host}:{server_model.port}{server_model.rpc_endpoint_path}"
+    
+    # Configuration for MCP-Use
+    config = {
+        "mcpServers": {
+            "discovery_session": {
+                "transport": "sse",
+                "url": base_url
+            }
+        }
+    }
     
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(target_url, json=payload, timeout=10.0)
-            response.raise_for_status()
-            json_response = response.json()
+        # Initialize Client
+        client = MCPClient(config)
+        await client.create_all_sessions()
+        
+        session = client.get_session("discovery_session")
+        if not session:
+             raise Exception("Failed to establish session for discovery.")
 
-        error_obj = json_response.get("error")
-        if error_obj is not None:
-            raise Exception(f"MCP server returned error payload: {json_response}")
+        # List tools
+        tools = await session.list_tools()
+        
+        # Format for Database
+        discovered_tools = []
+        for tool in tools:
+            discovered_tools.append({
+                "name": tool.name,
+                "description": tool.description or "",
+                "inputSchema": tool.inputSchema or {}
+            })
 
-        discovered_tools = json_response.get("result", {}).get("tools", [])
+        # Update DB
         update_payload = mcp_schemas.MCPServerUpdate(discovered_tools_schema=discovered_tools)
         crud_mcp.update_mcp_server(db=db, server_id=server_model.id, server_update=update_payload)
         logger.info(f"Successfully discovered and cached {len(discovered_tools)} tools for MCP server '{server_model.name}'.")
 
     except Exception as e:
-        logger.error(f"Discovery for MCP server '{server_model.name}' ({target_url}) failed: {e}")
+        logger.error(f"Discovery for MCP server '{server_model.name}' ({base_url}) failed: {e}")
 
 # --- CRUD ENDPOINTS ---
 
@@ -123,10 +138,6 @@ def create_mcp_server(
 
 @router.get("/mcp-servers/", response_model=List[mcp_schemas.MCPServerInDB])
 def read_mcp_servers(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    """
-    Retrieve all MCP server configurations from the database.
-    Discovery is now handled by a background task.
-    """
     servers = crud_mcp.get_mcp_servers(db, skip=skip, limit=limit)
     return servers
 
@@ -194,22 +205,7 @@ def list_mcp_server_tools(server_id: int, db: Session = Depends(get_db)):
 
 @router.get("/mcp-servers/{server_id}/config-schema", response_model=Dict[str, Any])
 async def get_mcp_server_schema(server_id: int, db: Session = Depends(get_db)):
-    db_server = crud_mcp.get_mcp_server(db, server_id=server_id)
-    if db_server is None:
-        raise HTTPException(status_code=404, detail="MCP server not found")
-
-    target_url = f"http://{db_server.host}:{db_server.port}{db_server.rpc_endpoint_path}"
-    payload = {"jsonrpc": "2.0", "method": "server/describe", "params": {}, "id": 2}
-
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(target_url, json=payload, timeout=3.0)
-            if response.status_code >= 400:
-                return {"type": "object", "properties": {}}
-            json_response = response.json()
-            if json_response.get("error"):
-                    return {"type": "object", "properties": {}}
-            return json_response.get("result", {"type": "object", "properties": {}})
-
-        except httpx.RequestError:
-            return {"type": "object", "properties": {}}
+    """
+    Legacy support: Returns empty schema as 'server/describe' is not standard MCP.
+    """
+    return {"type": "object", "properties": {}}

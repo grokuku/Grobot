@@ -3,3 +3,6 @@ uvicorn
 httpx
 supervisor
 pytz
+# --- NEW: MCP Standard ---
+mcp
+starlette

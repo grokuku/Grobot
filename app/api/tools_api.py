@@ -1,17 +1,18 @@
 #### Fichier: app/api/tools_api.py
-import json
-import httpx
 import logging
-import itertools
-import time  # <--- Ajout pour le timing
-from fastapi.responses import JSONResponse
 import asyncio
+import time
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+
+# --- NEW IMPORTS FOR MCP-USE ---
+from mcp_use import MCPClient
+# -------------------------------
 
 from app.database import crud_bots
 from app.database.sql_session import get_db
@@ -24,8 +25,7 @@ router = APIRouter(
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-JSONRPC_ID_COUNTER = itertools.count(1)
-
+# Caches
 TOOL_LOCATION_CACHE: Dict[str, Dict[str, Any]] = {}
 LOCATION_CACHE_LOCK = asyncio.Lock()
 DEFINITIONS_CACHE_EXPIRY = timedelta(minutes=5)
@@ -44,26 +44,27 @@ class ToolCallRequest(BaseModel):
     tool_name: str
     arguments: Dict[str, Any]
 
-async def mcp_request(url: str, method: str, params: Dict | None = None, timeout: float = 10.0) -> Optional[Dict]:
-    payload = {"jsonrpc": "2.0", "method": method, "id": next(JSONRPC_ID_COUNTER)}
-    if params: payload["params"] = params
-    async with httpx.AsyncClient() as client:
-        headers = {'Content-Type': 'application/json'}
-        try:
-            response = await client.post(url, content=json.dumps(payload), headers=headers, timeout=timeout)
-            response.raise_for_status()
-            # Handle cases where the response is empty but status is 200 OK
-            if not response.content:
-                return None
-            return response.json()
-        except (httpx.RequestError, json.JSONDecodeError) as e:
-            log.error(f"MCP_REQUEST FAILED for {url}: {e}")
-            raise ToolServerError(f"MCP request failed for {url}")
-
-class ToolServerError(Exception): pass
-
-def create_error_tool_result(message: str) -> Dict[str, Any]:
-    return {"jsonrpc": "2.0", "error": {"code": -32603, "message": message}, "id": next(JSONRPC_ID_COUNTER)}
+# --- HELPER: Build MCP Client Config ---
+def build_mcp_config(servers: List[Any]) -> Dict[str, Any]:
+    """
+    Constructs the configuration dictionary required by MCPClient
+    from a list of MCPServer database models.
+    """
+    mcp_servers_config = {}
+    for server in servers:
+        # We construct a unique key for the session based on ID
+        server_key = f"server_{server.id}"
+        
+        # Standard MCP over HTTP usually implies SSE/Streamable transport.
+        # We use the URL from the DB. 
+        base_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}"
+        
+        mcp_servers_config[server_key] = {
+            "transport": "sse", # Defaulting to SSE as per standard MCP HTTP usage
+            "url": base_url,
+        }
+    
+    return {"mcpServers": mcp_servers_config}
 
 @router.get("/definitions", response_model=List[ToolDefinition])
 async def get_tool_definitions(bot_id: int, db: Session = Depends(get_db)):
@@ -71,67 +72,85 @@ async def get_tool_definitions(bot_id: int, db: Session = Depends(get_db)):
         now = datetime.now(timezone.utc)
         cached_entry = BOT_DEFINITIONS_CACHE.get(bot_id)
         if cached_entry and (now - cached_entry["timestamp"]) < DEFINITIONS_CACHE_EXPIRY:
-            # log.info(f"Tool definitions for bot {bot_id} served from cache.") # Décommenter pour du debug verbeux
             return cached_entry["data"]
 
         async with DEFINITIONS_CACHE_LOCK:
-            # --- START OF LOGGING MODIFICATION ---
-            log.info(f"Cache miss for bot {bot_id}. Starting tool discovery.")
+            log.info(f"Cache miss for bot {bot_id}. Starting tool discovery with MCP-Use.")
             discovery_start_time = time.monotonic()
 
             bot = crud_bots.get_bot(db, bot_id=bot_id)
             if not bot: raise HTTPException(status_code=404, detail=f"Bot with ID {bot_id} not found.")
 
-            tasks, associations_in_order = [], []
+            # Identify active servers
+            active_servers = []
+            associations_map = {} # Map server_id -> association
             if bot.mcp_server_associations:
                 for association in bot.mcp_server_associations:
-                    server = association.mcp_server
-                    if server and server.enabled:
-                        server_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}"
-                        tasks.append(mcp_request(server_url, "tools/list", timeout=5.0))
-                        associations_in_order.append(association)
-            
-            if not tasks: 
+                    if association.mcp_server and association.mcp_server.enabled:
+                        active_servers.append(association.mcp_server)
+                        associations_map[association.mcp_server.id] = association
+
+            if not active_servers:
                 log.warning(f"No active MCP servers found for bot {bot_id}.")
                 return []
 
-            log.info(f"Querying {len(tasks)} MCP server(s) for bot {bot_id}...")
-            network_call_start_time = time.monotonic()
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            network_duration = time.monotonic() - network_call_start_time
-            log.info(f"MCP server network calls completed in {network_duration:.4f} seconds.")
-            # --- END OF LOGGING MODIFICATION ---
+            # 1. Initialize MCP Client
+            config = build_mcp_config(active_servers)
+            client = MCPClient(config)
             
             validated_definitions: List[ToolDefinition] = []
-            for i, res in enumerate(results):
-                association = associations_in_order[i]
-                server_url = f"http://{association.mcp_server.host}:{association.mcp_server.port}{association.mcp_server.rpc_endpoint_path}"
 
-                if isinstance(res, Exception) or res is None:
-                    log.error(f"Failed to process server '{server_url}'. Error: {res}", exc_info=False)
-                    continue
+            try:
+                # 2. Connect to all servers
+                await client.create_all_sessions()
                 
-                base_tools = res.get("result", {}).get("tools", [])
-                db_config = association.configuration or {}
-
-                for tool_def_dict in base_tools:
-                    await asyncio.sleep(0) 
+                # 3. List tools for each session
+                for server in active_servers:
+                    server_key = f"server_{server.id}"
                     try:
-                        tool_name = tool_def_dict.get("name")
-                        if not tool_name: continue
+                        session = client.get_session(server_key)
+                        if not session:
+                            log.warning(f"Could not get session for {server.name} ({server_key})")
+                            continue
+                            
+                        # Standard MCP list_tools
+                        mcp_tools = await session.list_tools()
+                        
+                        # Retrieve specific config for this bot/server association
+                        association = associations_map.get(server.id)
+                        db_config = association.configuration or {} if association else {}
 
-                        tool_specific_db_config = (db_config.get("tool_config") or {}).get(tool_name, {})
-                        enriched_def_dict = tool_def_dict.copy()
-                        enriched_def_dict.update(tool_specific_db_config)
+                        for tool in mcp_tools:
+                            # Tool object from mcp library usually has name, description, inputSchema
+                            # We convert it to our internal definition
+                            
+                            # Merge with DB config (overrides)
+                            tool_specific_db_config = (db_config.get("tool_config") or {}).get(tool.name, {})
+                            
+                            # Build the definition dictionary
+                            def_dict = {
+                                "name": tool.name,
+                                "description": tool.description or "",
+                                "inputSchema": tool.inputSchema or {},
+                            }
+                            def_dict.update(tool_specific_db_config)
+                            
+                            validated_definitions.append(ToolDefinition.model_validate(def_dict))
 
-                        validated_tool = ToolDefinition.model_validate(enriched_def_dict)
-                        validated_definitions.append(validated_tool)
-                    except Exception as tool_error:
-                        log.warning(f"Skipping tool '{tool_def_dict.get('name')}' from {server_url} due to processing error: {tool_error}")
+                    except Exception as server_err:
+                        log.error(f"Error listing tools for server {server.name}: {server_err}")
+
+            except Exception as client_err:
+                log.error(f"MCP Client error during discovery: {client_err}")
+            finally:
+                # Ensure we close connections if MCPClient has a cleanup method (it usually manages context)
+                # mcp-use currently manages sessions internally, explicit close might be needed depending on version.
+                # Assuming simple usage for now.
+                pass
 
             BOT_DEFINITIONS_CACHE[bot_id] = {"timestamp": now, "data": validated_definitions}
             total_duration = time.monotonic() - discovery_start_time
-            log.info(f"Refreshed cache with {len(validated_definitions)} tools for bot {bot_id}. Total discovery time: {total_duration:.4f} seconds.")
+            log.info(f"Refreshed cache with {len(validated_definitions)} tools for bot {bot_id}. Total time: {total_duration:.4f}s")
             return validated_definitions
 
     except Exception as e:
@@ -142,50 +161,127 @@ async def get_tool_definitions(bot_id: int, db: Session = Depends(get_db)):
 async def execute_tool_call(request: ToolCallRequest, db: Session = Depends(get_db)):
     bot = crud_bots.get_bot(db, bot_id=request.bot_id)
     if not bot: raise HTTPException(status_code=404, detail=f"Bot with ID {request.bot_id} not found.")
+    
     try:
+        # 1. Resolve Tool Location (Cache or Discovery)
         target_server_info = TOOL_LOCATION_CACHE.get(request.tool_name)
+        target_server_model = None
+
         if not target_server_info:
             async with LOCATION_CACHE_LOCK:
+                # Double-check locking
                 target_server_info = TOOL_LOCATION_CACHE.get(request.tool_name)
                 if not target_server_info:
-                    log.info(f"Cache miss for tool '{request.tool_name}'. Starting discovery.")
-                    if bot.mcp_server_associations:
-                        for association in bot.mcp_server_associations:
-                            server = association.mcp_server
-                            if not server or not server.enabled: continue
-                            server_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}"
-                            try:
-                                rpc_response = await mcp_request(server_url, "tools/list", timeout=20.0)
-                                if rpc_response:
-                                    for tool in rpc_response.get("result", {}).get("tools", []):
-                                        tool_name = tool.get('name')
-                                        if tool_name and tool_name not in TOOL_LOCATION_CACHE:
-                                            TOOL_LOCATION_CACHE[tool_name] = {"url": server_url, "server_id": server.id}
-                                            log.info(f"Cached tool '{tool_name}' at {server_url}")
-                            except ToolServerError: continue
-                    target_server_info = TOOL_LOCATION_CACHE.get(request.tool_name)
-        if not target_server_info:
-            log.error(f"Tool '{request.tool_name}' not found for bot {bot.id} after discovery.")
-            return JSONResponse(content=create_error_tool_result(f"Tool '{request.tool_name}' not found."))
-        
-        server_url, target_server_id = target_server_info["url"], target_server_info["server_id"]
-        params = {"name": request.tool_name, "arguments": request.arguments}
-        association = next((a for a in bot.mcp_server_associations if a.mcp_server_id == target_server_id), None)
-        if association and association.configuration:
-            params["configuration"] = association.configuration
-        
-        log.info(f"Executing tool '{request.tool_name}' on {server_url}")
-        result = await mcp_request(server_url, "tools/call", params, timeout=300.0)
-        
-        if result and "error" in result and not isinstance(result.get("error"), dict):
-            log.warning(f"Normalizing malformed error response from MCP server: {result}")
-            result = create_error_tool_result("Tool server returned a malformed error response.")
+                    log.info(f"Cache miss for tool '{request.tool_name}'. Quick discovery...")
+                    # We need to find which server has this tool.
+                    # We'll spin up a client for all bot servers to check.
+                    active_servers = [
+                        assoc.mcp_server for assoc in bot.mcp_server_associations 
+                        if assoc.mcp_server and assoc.mcp_server.enabled
+                    ]
+                    
+                    if active_servers:
+                        config = build_mcp_config(active_servers)
+                        client = MCPClient(config)
+                        try:
+                            await client.create_all_sessions()
+                            for server in active_servers:
+                                server_key = f"server_{server.id}"
+                                session = client.get_session(server_key)
+                                if session:
+                                    tools = await session.list_tools()
+                                    for t in tools:
+                                        # Cache location
+                                        TOOL_LOCATION_CACHE[t.name] = {"server_id": server.id}
+                                        if t.name == request.tool_name:
+                                            target_server_info = {"server_id": server.id}
+                        except Exception as e:
+                            log.error(f"Discovery error in execute_tool_call: {e}")
 
-        if result is None:
-            return JSONResponse(content=create_error_tool_result("Tool server returned an empty response."))
+        if not target_server_info:
+            return JSONResponse(content={
+                "jsonrpc": "2.0", 
+                "error": {"code": -32601, "message": f"Tool '{request.tool_name}' not found."}
+            })
+
+        # 2. Get the specific server model
+        target_server_id = target_server_info["server_id"]
+        # Retrieve fresh model from DB to get host/port
+        from app.database import crud_mcp
+        target_server_model = crud_mcp.get_mcp_server(db, target_server_id)
         
-        return JSONResponse(content=result)
-    
+        if not target_server_model:
+             return JSONResponse(content={
+                "jsonrpc": "2.0", 
+                "error": {"code": -32603, "message": "Associated MCP server not found in DB."}
+            })
+
+        # 3. Execute with MCP Client
+        # We create a focused client just for this call to ensure a fresh session/connection
+        # (Optimisation possible: keep persistent clients if needed)
+        config = build_mcp_config([target_server_model])
+        client = MCPClient(config)
+        server_key = f"server_{target_server_model.id}"
+
+        log.info(f"Executing tool '{request.tool_name}' on server {target_server_model.name} via MCP-Use")
+        
+        try:
+            await client.create_all_sessions()
+            session = client.get_session(server_key)
+            if not session:
+                 raise Exception("Failed to establish session with MCP server.")
+
+            # EXECUTE
+            # mcp-use call_tool returns a Result object (usually with .content)
+            result = await session.call_tool(
+                name=request.tool_name,
+                arguments=request.arguments
+            )
+            
+            # 4. Format Result to JSON-RPC 2.0 style for the frontend
+            # The standard MCP Result has a 'content' attribute which is a list of TextContent or ImageContent
+            
+            response_content = []
+            if hasattr(result, "content") and isinstance(result.content, list):
+                for item in result.content:
+                    # Convert MCP types to simple dicts
+                    if hasattr(item, "type") and hasattr(item, "text"):
+                         response_content.append({"type": "text", "text": item.text})
+                    elif hasattr(item, "type") and item.type == "image":
+                         # Handle image (data, mimeType)
+                         response_content.append({
+                             "type": "image", 
+                             "data": item.data, 
+                             "mimeType": item.mimeType
+                         })
+                    else:
+                        # Fallback for unknown types
+                        response_content.append(item.model_dump() if hasattr(item, "model_dump") else str(item))
+            
+            # Check for error flag in result if present
+            is_error = getattr(result, "isError", False)
+            
+            json_response = {
+                "jsonrpc": "2.0",
+                "result": {
+                    "content": response_content,
+                    "isError": is_error
+                },
+                "id": 1 # Dummy ID
+            }
+            
+            return JSONResponse(content=json_response)
+
+        except Exception as tool_err:
+            log.error(f"MCP Execution Error: {tool_err}", exc_info=True)
+            return JSONResponse(content={
+                "jsonrpc": "2.0", 
+                "error": {"code": -32603, "message": f"Tool execution failed: {str(tool_err)}"}
+            })
+
     except Exception as e:
         log.error(f"Unexpected error in execute_tool_call: {e}", exc_info=True)
-        return JSONResponse(content=create_error_tool_result(f"Internal error in tool proxy: {e}"))
+        return JSONResponse(content={
+            "jsonrpc": "2.0", 
+            "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
+        })

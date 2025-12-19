@@ -1,17 +1,17 @@
+#### Fichier: app/core/agent_orchestrator.py
 import logging
 from typing import Union, List, Dict, Any, Optional, AsyncGenerator
-import httpx
 import asyncio
 import json
-import os # MODIFIED: Added os for file path handling
-from pydantic import BaseModel, Field
+import os
+from pydantic import BaseModel
 
-# NEW: Add websockets for handling MCP streams
-import websockets
+# --- NEW: MCP-Use Import ---
+from mcp_use import MCPClient
+# ---------------------------
 
 from sqlalchemy.orm import Session
 
-# NEW: Import the LLM manager and prompts
 from app.core import llm_manager
 from app.core.agents import prompts, synthesizer
 
@@ -28,7 +28,7 @@ from app.schemas.chat_schemas import (
 # Database CRUD Imports
 from app.database import crud_bots, crud_mcp, crud_settings, sql_models
 
-# --- MODIFICATION START: ACE Framework Import ---
+# ACE Framework Import
 try:
     from ace.playbook import Playbook
     ACE_INSTALLED = True
@@ -36,7 +36,6 @@ except ImportError:
     ACE_INSTALLED = False
     # Dummy class to prevent runtime errors if ACE is not present
     class Playbook: pass
-# --- MODIFICATION END ---
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +88,7 @@ async def process_user_message(
     
     global_settings = crud_settings.get_global_settings(db)
     
-    # MODIFICATION: Load Playbook content early for use in Planner
+    # Load Playbook content early for use in Planner AND Tool Identifier
     playbook_content = _load_bot_playbook_content(bot.id)
 
     # --- 1. Gatekeeper Step (Category: Decisional) ---
@@ -117,23 +116,44 @@ async def process_user_message(
     # --- 2. Tool Identification Step (Category: Tools) ---
     logger.info("--- STARTING TOOL IDENTIFICATION STEP ---")
     available_tools = await get_available_tools_for_bot(db, bot.id)
+    
+    # Debug log (reverted to debug level)
     logger.debug(f"Available tools for bot {bot.id}: {[t['name'] for t in available_tools]}")
     
     tools_config = llm_manager.resolve_llm_config(bot, global_settings, llm_manager.LLM_CATEGORY_TOOLS)
     logger.info(f"Tool Identifier using model: {tools_config.model_name} at {tools_config.server_url}")
 
-    tools_list_str = "\n".join([f"- {tool['name']}: {tool['description']}" for tool in available_tools])
-    tool_id_prompt = prompts.TOOL_IDENTIFIER_SYSTEM_PROMPT.format(tools_list=tools_list_str)
+    # --- IMPROVED TOOL LIST FORMATTING ---
+    tools_entries = []
+    for tool in available_tools:
+        name = tool.get('name', 'unknown')
+        desc = tool.get('description', 'No description')
+        
+        # Extract argument keys from schema to give the LLM a hint
+        input_schema = tool.get('inputSchema', {})
+        properties = input_schema.get('properties', {})
+        arg_keys = list(properties.keys()) if properties else []
+        
+        args_str = ", ".join(arg_keys) if arg_keys else "None"
+        tools_entries.append(f"- {name}: {desc} (Arguments: {args_str})")
+        
+    tools_list_str = "\n".join(tools_entries)
+    
+    # Inject Playbook content into Tool Identifier
+    tool_id_prompt = prompts.TOOL_IDENTIFIER_SYSTEM_PROMPT.format(
+        tools_list=tools_list_str,
+        ace_playbook=playbook_content
+    )
     
     logger.info("Calling LLM for Tool Identifier...")
+    logger.debug(f"Tool Identifier Prompt Preview: {tool_id_prompt[:200]}...")
+
     try:
         response_str = await llm_manager.call_llm(tools_config, tool_id_prompt, request.history, json_mode=True)
         logger.info("LLM Response received for Tool Identifier.")
         logger.debug(f"Raw Tool Identifier Response: {response_str}")
     except Exception as llm_error:
         logger.error(f"CRITICAL ERROR during Tool Identifier LLM call: {llm_error}", exc_info=True)
-        # Fail safe to allow flow to continue if possible, or re-raise
-        # For now, let's treat it as an empty response (no tools) to unblock the bot
         response_str = "{}"
 
     try:
@@ -154,7 +174,6 @@ async def process_user_message(
     required_tool_definitions = [tool for tool in available_tools if tool.get("name") in required_tool_names]
     
     param_ext_prompt = prompts.PARAMETER_EXTRACTOR_SYSTEM_PROMPT # No formatting needed
-    # This is a complex task, so we continue to use the Tools category config
     response_str = await llm_manager.call_llm(tools_config, param_ext_prompt, request.history, json_mode=True)
 
     try:
@@ -176,7 +195,7 @@ async def process_user_message(
     # --- 4. Planning Step (Category: Tools) ---
     logger.info("All required parameters are present. Proceeding to planning.")
     
-    # MODIFICATION: Inject Playbook content into Planner prompt
+    # Inject Playbook content into Planner prompt
     planner_prompt = prompts.PLANNER_SYSTEM_PROMPT.format(ace_playbook=playbook_content)
     
     planner_messages = [{"role": "user", "content": f"Create a plan for these tools and parameters: {param_ext_result.model_dump_json()}"}]
@@ -218,7 +237,7 @@ async def process_user_message(
         tool_definitions=required_tool_definitions
     )
 
-# --- NEW Synthesis Phase Router ---
+# --- Synthesis Phase Router ---
 
 async def run_synthesis_phase(
     bot: sql_models.Bot,
@@ -230,7 +249,7 @@ async def run_synthesis_phase(
     Routes to the appropriate synthesizer based on whether tools were executed.
     This is the new entry point for the final response generation phase.
     """
-    # MODIFICATION: Load Playbook content for Synthesis
+    # Load Playbook content for Synthesis
     playbook_content = _load_bot_playbook_content(bot.id)
 
     if tool_results:
@@ -255,132 +274,160 @@ async def run_synthesis_phase(
             yield chunk
 
 
-# --- Helper functions for tool discovery and execution ---
+# --- REFACTORED: Tool Discovery with MCP-Use (Fault Tolerant) ---
 
 async def get_available_tools_for_bot(db: Session, bot_id: int) -> List[Dict[str, Any]]:
-    logger.info(f"Fetching available tools for bot_id: {bot_id}")
+    """
+    Fetches available tools using MCP-Use.
+    Iterates over servers individually to isolate failures (e.g., if one server is down).
+    """
+    logger.info(f"Fetching available tools for bot_id: {bot_id} (via MCP-Use)")
     mcp_servers = crud_mcp.get_mcp_servers_for_bot(db, bot_id=bot_id)
     if not mcp_servers:
         return []
 
     all_tools = []
-    async with httpx.AsyncClient() as client:
-        tasks = [_fetch_tools_from_mcp(client, server) for server in mcp_servers]
-        results = await asyncio.gather(*tasks)
-        for server_id, tool_list in results:
-            if tool_list:
-                for tool in tool_list:
-                    tool['server_id'] = server_id
-                all_tools.extend(tool_list)
+    
+    # Iterate over each server individually to prevent one failure from blocking all tools
+    for server in mcp_servers:
+        base_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}"
+        server_key = f"server_{server.id}"
+        
+        # Create a dedicated configuration for this single server
+        single_server_config = {
+            "mcpServers": {
+                server_key: {
+                    "transport": "sse",
+                    "url": base_url,
+                }
+            }
+        }
+        
+        try:
+            # Instantiate a fresh client for this server
+            client = MCPClient(single_server_config)
+            await client.create_all_sessions()
+            
+            session = client.get_session(server_key)
+            if session:
+                tools = await session.list_tools()
+                for tool in tools:
+                    all_tools.append({
+                        "name": tool.name,
+                        "description": tool.description or "",
+                        "inputSchema": tool.inputSchema or {},
+                        "server_id": server.id 
+                    })
+                logger.info(f"Successfully discovered {len(tools)} tools from server {server.name}")
+            else:
+                logger.warning(f"No session created for server {server.name}")
+                
+        except Exception as e:
+            # Log error but CONTINUE to next server
+            logger.error(f"Discovery failed for server {server.name} ({base_url}): {e}")
+            continue
+    
     return all_tools
 
-async def _fetch_tools_from_mcp(client: httpx.AsyncClient, server) -> tuple[int, Optional[List[Dict[str, Any]]]]:
-    host = server.host if server.host.startswith(('http://', 'https://')) else f"http://{server.host}"
-    rpc_path = server.rpc_endpoint_path if server.rpc_endpoint_path.startswith("/") else f"/{server.rpc_endpoint_path}"
-    server_url = f"{host}:{server.port}{rpc_path}"
-    try:
-        payload = {"jsonrpc": "2.0", "method": "tools/list", "params": {}, "id": server.id}
-        response = await client.post(server_url, json=payload, timeout=10.0)
-        response.raise_for_status()
-        json_response = response.json()
-        if "error" in json_response:
-            logger.error(f"MCP server at {server_url} returned an error: {json_response['error']}")
-            return server.id, None
-        return server.id, json_response.get("result", {}).get("tools", [])
-    except httpx.RequestError as e:
-        logger.error(f"Failed to connect to MCP server at {server_url}: {e}")
-        return server.id, None
-    except Exception as e:
-        logger.error(f"An unexpected error occurred fetching tools from {server_url}: {e}", exc_info=True)
-        return server.id, None
 
-# --- MODIFICATION START: Using keepalive instead of global timeouts ---
-async def _handle_mcp_stream(websocket_url: str) -> Dict:
-    """
-    Connects to an MCP WebSocket stream with keepalive pings and waits for the final result.
-    """
-    try:
-        # Use keepalive ping/pong to ensure connection is alive without a hard global timeout.
-        async with websockets.connect(
-            websocket_url,
-            ping_interval=20, 
-            ping_timeout=20
-        ) as websocket:
-            async for message_str in websocket:
-                message_data = json.loads(message_str)
-                params = message_data.get("params", {})
-                # Check both chunk and end for a final result, similar to event_handler.py
-                if message_data.get("method") in ("stream/chunk", "stream/end"):
-                    if error_obj := params.get("error"):
-                        return {"error": {"message": error_obj.get("message", "Unknown stream error")}}
-                    elif result_obj := params.get("result"):
-                        # This is the final result, wrap it for consistency
-                        return {"result": result_obj}
-    except Exception as e:
-        logger.error(f"MCP stream connection error at {websocket_url}: {e}", exc_info=True)
-        return {"error": {"message": f"Failed to handle the tool stream: {e}"}}
-    # If the loop finishes without a result, it's an error
-    logger.warning(f"Tool stream at {websocket_url} ended without a result or error message.")
-    return {"error": {"message": "Tool stream ended without a result."}}
-# --- MODIFICATION END ---
-
+# --- REFACTORED: Execution with MCP-Use ---
 
 async def execute_tool_plan(
     db: Session, bot_id: int, plan_result: PlannerResult, tool_definitions: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
-    logger.info(f"Starting execution of plan for bot {bot_id}")
+    """
+    Executes the planned tools using MCP-Use.
+    """
+    logger.info(f"Starting execution of plan for bot {bot_id} using MCP-Use")
     tool_execution_results = []
+    
+    # 1. Identify involved servers
+    involved_server_ids = set()
     tool_map = {tool['name']: tool for tool in tool_definitions}
+    
+    for step in plan_result.plan:
+        tool_def = tool_map.get(step.tool_name)
+        if tool_def and 'server_id' in tool_def:
+            involved_server_ids.add(tool_def['server_id'])
+    
+    # 2. Build MCP Config for involved servers
+    mcp_config = {"mcpServers": {}}
+    server_map = {} # Map ID to model for logging
+    
+    for server_id in involved_server_ids:
+        # Retrieve server details (using associations ensures we only get active/associated ones)
+        association = crud_mcp.get_association(db, bot_id=bot_id, mcp_server_id=server_id)
+        if association and association.mcp_server:
+            server = association.mcp_server
+            base_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}"
+            mcp_config["mcpServers"][f"server_{server.id}"] = {
+                "transport": "sse",
+                "url": base_url,
+            }
+            server_map[server_id] = server
 
-    async with httpx.AsyncClient() as client:
+    if not mcp_config["mcpServers"]:
+        logger.error("No valid servers found for the plan. Skipping execution.")
+        return []
+
+    # 3. Execute Steps
+    client = MCPClient(mcp_config)
+    try:
+        await client.create_all_sessions()
+        
         for step in sorted(plan_result.plan, key=lambda x: x.step):
             tool_name = step.tool_name
-            logger.info(f"Executing step {step.step}: calling tool '{tool_name}'")
-
             tool_def = tool_map.get(tool_name)
-            if not tool_def or 'server_id' not in tool_def:
-                logger.error(f"Could not find a server_id for tool '{tool_name}'. Skipping.")
-                continue
             
-            server_id = tool_def['server_id']
-            association = crud_mcp.get_association(db, bot_id=bot_id, mcp_server_id=server_id)
-            if not association or not association.mcp_server:
-                logger.error(f"Could not find MCP association for tool '{tool_name}' on server {server_id}")
+            if not tool_def:
+                logger.error(f"Definition not found for tool {tool_name}")
+                tool_execution_results.append({"tool_name": tool_name, "result": {"error": "Tool definition not found"}})
                 continue
 
-            server = association.mcp_server
-            tool_config = association.configuration or {}
+            server_id = tool_def.get('server_id')
+            server_key = f"server_{server_id}"
             
-            host = server.host if server.host.startswith(('http://', 'https://')) else f"http://{server.host}"
-            rpc_path = server.rpc_endpoint_path if server.rpc_endpoint_path.startswith("/") else f"/{server.rpc_endpoint_path}"
-            server_url = f"{host}:{server.port}{rpc_path}"
+            logger.info(f"Executing step {step.step}: calling tool '{tool_name}' on {server_key}")
 
-            payload = {
-                "jsonrpc": "2.0", "id": step.step, "method": "tools/call",
-                "params": {"name": tool_name, "arguments": step.arguments, "configuration": tool_config}
-            }
+            session = client.get_session(server_key)
+            if not session:
+                logger.error(f"No active session for {server_key}")
+                tool_execution_results.append({"tool_name": tool_name, "result": {"error": "Server unavailable"}})
+                continue
 
             try:
-                response = await client.post(server_url, json=payload, timeout=30.0)
-                response.raise_for_status()
-                json_response = response.json()
+                # CALL TOOL
+                result_obj = await session.call_tool(tool_name, step.arguments)
                 
-                final_result = None
-                if "result" in json_response or "error" in json_response:
-                    logger.info(f"Tool '{tool_name}' returned a direct response.")
-                    final_result = {"error": json_response["error"]} if "error" in json_response else json_response.get("result", {})
-                elif json_response.get("method") == "stream/start" and (ws_url := json_response.get("params", {}).get("ws_url")):
-                    logger.info(f"Tool '{tool_name}' initiated a stream. Connecting to {ws_url}...")
-                    stream_response = await _handle_mcp_stream(ws_url)
-                    final_result = stream_response.get("result") or {"error": stream_response.get("error", {"message": "Unknown stream error"})}
+                # PROCESS RESULT (Convert MCP Content objects to dict/text)
+                final_output = {}
+                content_list = []
+                
+                # The result is likely a CallToolResult object with a 'content' list
+                if hasattr(result_obj, 'content') and isinstance(result_obj.content, list):
+                    for item in result_obj.content:
+                        if hasattr(item, 'type') and hasattr(item, 'text') and item.type == 'text':
+                            content_list.append(item.text)
+                        elif hasattr(item, 'type') and item.type == 'image':
+                             content_list.append(f"[Image Data: {item.mimeType}]")
+                        else:
+                            content_list.append(str(item))
+                    
+                    # Join text content for simple LLM consumption
+                    final_output = {"text_content": "\n".join(content_list), "raw_mcp_content": [c.model_dump() if hasattr(c, 'model_dump') else str(c) for c in result_obj.content]}
                 else:
-                    logger.error(f"Tool '{tool_name}' returned an unknown response format: {json_response}")
-                    final_result = {"error": "Invalid response format from tool server."}
+                    final_output = {"result": str(result_obj)}
 
-                tool_execution_results.append({"tool_name": tool_name, "result": final_result})
+                if getattr(result_obj, "isError", False):
+                     final_output["is_error"] = True
+
+                tool_execution_results.append({"tool_name": tool_name, "result": final_output})
 
             except Exception as e:
-                logger.error(f"Exception calling tool '{tool_name}': {e}", exc_info=True)
+                logger.error(f"Error executing tool {tool_name}: {e}")
                 tool_execution_results.append({"tool_name": tool_name, "result": {"error": str(e)}})
 
+    except Exception as e:
+         logger.error(f"Fatal error in MCP execution loop: {e}", exc_info=True)
+    
     return tool_execution_results

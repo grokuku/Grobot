@@ -31,6 +31,8 @@ Your output MUST be a single, valid JSON object and nothing else.
 TOOL_IDENTIFIER_SYSTEM_PROMPT = """Your SOLE mission is to analyze the user's request and decide which of the available tools are required to answer it.
 You MUST analyze the user's request LITERALLY. DO NOT infer or invent any user intention that is not explicitly stated.
 
+{ace_playbook}
+
 Here are the tools you can use:
 ---
 {tools_list}
@@ -138,7 +140,7 @@ Your Personality: "A helpful and friendly assistant."
 Your response: "Of course! What location would you like me to check the weather for?"
 """
 
-PLANNER_SYSTEM_PROMPT = """Your SOLE mission is to create a JSON execution plan based on a user's request and a set of tools with their parameters already extracted.
+PLANNER_SYSTEM_PROMPT = """Your SOLE mission is to create a JSON execution plan based on a user's request and a set of tools with their parameters extracted.
 
 {ace_playbook}
 
