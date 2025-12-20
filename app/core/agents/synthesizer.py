@@ -3,7 +3,6 @@ import json
 import logging
 from typing import List, Dict, Any, AsyncGenerator
 
-# MODIFIED: Import the new LLM manager and necessary DB models
 from app.core import llm_manager
 from app.database.sql_models import Bot, GlobalSettings
 from app.schemas.chat_schemas import ChatMessage
@@ -14,7 +13,7 @@ logger = logging.getLogger(__name__)
 def _format_tool_results_for_prompt(tool_results: List[Dict[str, Any]]) -> str:
     """
     Formats the results of the tool execution plan into a readable string for the LLM.
-    This version now correctly handles text and image content types.
+    Updated to support the standardized 'text_content' field from agent_orchestrator.
     """
     if not tool_results:
         return "No tools were executed."
@@ -24,7 +23,7 @@ def _format_tool_results_for_prompt(tool_results: List[Dict[str, Any]]) -> str:
         tool_name = res.get("tool_name", "unknown_tool")
         result_data = res.get("result", {})
         
-        # Handle potential error messages first
+        # 1. Handle explicit errors
         if isinstance(result_data, dict) and "error" in result_data:
             error_message = result_data["error"]
             if isinstance(error_message, dict):
@@ -32,37 +31,57 @@ def _format_tool_results_for_prompt(tool_results: List[Dict[str, Any]]) -> str:
             prompt += f"--- Tool: `{tool_name}` ---\nResult: The tool execution failed with an error: {error_message}\n\n"
             continue
 
-        content_list = result_data.get("content", [])
-        formatted_outputs = []
+        tool_output = ""
 
-        if not content_list:
-            tool_output = "The tool returned no content."
-        else:
-            for item in content_list:
-                item_type = item.get("type")
-                if item_type == "text":
-                    formatted_outputs.append(item.get("text", ""))
-                elif item_type == "image":
-                    source_url = item.get("source")
-                    if source_url:
-                        # Create a clear, structured sentence for the LLM to parse.
-                        formatted_outputs.append(f"An image was generated and is available at the following URL: {source_url}")
+        # 2. Check for the standardized 'text_content' (New Orchestrator Format)
+        if isinstance(result_data, dict) and "text_content" in result_data:
+            tool_output = result_data["text_content"]
+        
+        # 3. Fallback: Check for 'content' list (Legacy/Raw MCP Format)
+        elif isinstance(result_data, dict) and "content" in result_data:
+            content_list = result_data.get("content", [])
+            formatted_outputs = []
             
-            if not formatted_outputs:
-                tool_output = "The tool returned content but it could not be displayed (unsupported type)."
-            else:
+            for item in content_list:
+                # Handle dicts or objects
+                item_type = item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
+                
+                if item_type == "text":
+                    text_val = item.get("text", "") if isinstance(item, dict) else getattr(item, "text", "")
+                    formatted_outputs.append(text_val)
+                elif item_type == "image":
+                    # Handle image source/url
+                    if isinstance(item, dict):
+                         source_url = item.get("source") or item.get("url") # Try common keys
+                         mime_type = item.get("mimeType")
+                    else:
+                         source_url = getattr(item, "source", None) or getattr(item, "url", None)
+                         mime_type = getattr(item, "mimeType", None)
+
+                    if source_url:
+                        formatted_outputs.append(f"An image was generated and is available at the following URL: {source_url}")
+                    elif mime_type:
+                        formatted_outputs.append(f"[Image Data: {mime_type}]")
+
+            if formatted_outputs:
                 tool_output = " ".join(formatted_outputs)
+            else:
+                 # If content list exists but is empty or unparsable
+                 tool_output = "The tool executed but returned no displayable content."
+
+        # 4. Last Resort: Dump the whole result
+        else:
+            tool_output = str(result_data)
 
         prompt += f"--- Tool: `{tool_name}` ---\nResult: {tool_output}\n\n"
     
     return prompt
 
-# MODIFIED: Added playbook_content argument and injection
 async def run_synthesizer(
     bot: Bot,
     global_settings: GlobalSettings,
     history: List[Dict[str, Any]],
-    tool_results: List[Dict[str, Any]], # Kept for signature consistency, but ignored
+    tool_results: List[Dict[str, Any]], 
     playbook_content: str = ""
 ) -> AsyncGenerator[str, None]:
     """
@@ -71,13 +90,10 @@ async def run_synthesizer(
     logger.debug("Running conversational Synthesizer to generate response...")
 
     try:
-        # 1. Resolve LLM config for 'Output Client'
         output_config = llm_manager.resolve_llm_config(
             bot, global_settings, llm_manager.LLM_CATEGORY_OUTPUT_CLIENT
         )
 
-        # 2. Prepare prompts and messages for conversation
-        # INJECTION OF ACE PLAYBOOK
         system_prompt = llm_manager.prompts.SYNTHESIZER_SYSTEM_PROMPT.format(
             bot_name=bot.name,
             bot_personality=bot.personality,
@@ -86,11 +102,10 @@ async def run_synthesizer(
 
         logger.info(f"Conversational Synthesizer calling LLM with config: {output_config.model_dump()}")
 
-        # 3. Use the llm_manager to get a streamed response
         async for chunk in llm_manager.call_llm_stream(
             config=output_config,
             system_prompt=system_prompt,
-            messages=list(history) # Only history is needed
+            messages=list(history)
         ):
             yield chunk
 
@@ -99,7 +114,6 @@ async def run_synthesizer(
         yield "I'm sorry, I encountered an error while trying to formulate my response."
 
 
-# MODIFIED: Added playbook_content argument and injection
 async def run_tool_result_synthesizer(
     bot: Bot,
     global_settings: GlobalSettings,
@@ -113,15 +127,13 @@ async def run_tool_result_synthesizer(
     logger.debug("Running Tool Result Synthesizer to report tool outputs...")
 
     try:
-        # 1. Resolve LLM config for 'Output Client'
         output_config = llm_manager.resolve_llm_config(
             bot, global_settings, llm_manager.LLM_CATEGORY_OUTPUT_CLIENT
         )
 
-        # 2. Prepare prompts and messages using the specialized prompt
+        # Format the results using the improved function
         tool_results_prompt_section = _format_tool_results_for_prompt(tool_results)
         
-        # INJECTION OF ACE PLAYBOOK
         system_prompt = llm_manager.prompts.TOOL_RESULT_SYNTHESIZER_SYSTEM_PROMPT.format(
             bot_name=bot.name,
             bot_personality=bot.personality,
@@ -136,7 +148,6 @@ async def run_tool_result_synthesizer(
 
         logger.info(f"Tool Result Synthesizer calling LLM with config: {output_config.model_dump()}")
 
-        # 3. Use the llm_manager to get a streamed response
         async for chunk in llm_manager.call_llm_stream(
             config=output_config,
             system_prompt=system_prompt,

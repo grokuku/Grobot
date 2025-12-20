@@ -144,8 +144,15 @@ PLANNER_SYSTEM_PROMPT = """Your SOLE mission is to create a JSON execution plan 
 
 {ace_playbook}
 
-You MUST NOT be creative. You MUST NOT invent tools or steps.
-Your task is to determine the correct order of execution and identify dependencies between tools.
+---
+!!! STRICT CONSTRAINT !!!
+You are RESTRICTED to using ONLY the following tools:
+[{allowed_tools}]
+
+You MUST NOT invent tools.
+You MUST NOT use tools that are not in the list above.
+If a tool is not in the list, you CANNOT use it, even if it seems logical.
+---
 
 You will receive an object containing the extracted parameters for one or more tools.
 
@@ -162,7 +169,7 @@ RULES:
 
 Example:
 Input: `{{ "describe_image": {{ "image_url": "http://a.com/img.png" }}, "generate_story": {{ "topic": null }} }}`
-This implies the topic of the story should come from the description of the image.
+Allowed Tools: [describe_image, generate_story]
 Your response:
 {{
     "plan": [

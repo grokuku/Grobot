@@ -345,8 +345,58 @@ export async function handleDeleteMemoryEntry(botId, memoryId) {
 }
 
 
+// --- CHAT & STREAMING HANDLERS ---
+
+/**
+ * Helper to handle the EventSource streaming for bot responses.
+ * @param {string} streamUrl - The relative URL to stream events from.
+ * @param {HTMLElement} targetElement - The DOM element to append text to.
+ * @param {object} uiControls - Objects to re-enable on finish { input, button }.
+ */
+function streamBotResponse(streamUrl, targetElement, uiControls) {
+    const source = new EventSource(streamUrl);
+
+    source.onmessage = (event) => {
+        try {
+            // Attempt to parse the JSON chunk
+            const parsedData = JSON.parse(event.data);
+            // If valid JSON and has content, use it. Otherwise fallback.
+            const textContent = parsedData.content || event.data;
+
+            if (textContent) {
+                // Replace newlines with <br> for basic readability
+                const formattedChunk = textContent.replace(/\n/g, '<br>');
+                targetElement.insertAdjacentHTML('beforeend', formattedChunk);
+
+                // Scroll to bottom
+                if (targetElement.parentElement) {
+                    targetElement.parentElement.scrollTop = targetElement.parentElement.scrollHeight;
+                }
+            }
+        } catch (e) {
+            // Fallback for non-JSON strings (e.g. simple text)
+            // Or log warning if expected format is strictly JSON
+            const formattedChunk = event.data.replace(/\n/g, '<br>');
+            targetElement.insertAdjacentHTML('beforeend', formattedChunk);
+        }
+    };
+
+    // Browsers fire 'error' when the connection is closed by the server (which FastAPI does on finish)
+    source.onerror = (event) => {
+        source.close();
+        if (uiControls.input) uiControls.input.disabled = false;
+        if (uiControls.button) {
+            uiControls.button.disabled = false;
+            uiControls.button.textContent = 'Send';
+        }
+        if (uiControls.input) uiControls.input.focus();
+    };
+}
+
+
 /**
  * Handles the submission of a message from the test chat interface.
+ * REWRITTEN to support the new Orchestrator response types (Stop, Clarify, Ack+Plan+Stream).
  * @param {number} botId - The ID of the bot to chat with.
  * @param {string} message - The message from the user.
  */
@@ -361,24 +411,97 @@ export async function handleTestChatSubmit(botId, message) {
     submitButton.textContent = '...';
 
     try {
+        // 1. Send the message. Expects a JSON object back (ProcessMessageResponse).
         const response = await api.sendTestChatMessage(botId, message);
+
+        // 2. Determine Response Type
+
+        // CASE A: StopResponse (Gatekeeper blocked it)
+        if (response.reason) {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'bot-message error';
+            errorDiv.innerHTML = `<p><strong>Blocked:</strong> ${response.reason}</p>`;
+            messagesContainer.appendChild(errorDiv);
+
+            // Re-enable UI immediately
+            input.disabled = false;
+            submitButton.disabled = false;
+            submitButton.textContent = 'Send';
+            return;
+        }
+
+        // CASE B: ClarifyResponse (Bot needs more info)
+        if (response.message && !response.final_response_stream_url) {
+            const botMessageDiv = document.createElement('div');
+            botMessageDiv.className = 'bot-message';
+            botMessageDiv.innerHTML = `<p>${response.message}</p>`;
+            messagesContainer.appendChild(botMessageDiv);
+
+            // Re-enable UI immediately
+            input.disabled = false;
+            submitButton.disabled = false;
+            submitButton.textContent = 'Send';
+            return;
+        }
+
+        // CASE C: Streamable Response (Synthesize OR AcknowledgeAndExecute)
         const botMessageDiv = document.createElement('div');
         botMessageDiv.className = 'bot-message';
-        const formattedResponse = response.bot_response.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
-        botMessageDiv.innerHTML = `<p>${formattedResponse.replace(/\n/g, '<br>')}</p>`;
         messagesContainer.appendChild(botMessageDiv);
+
+        // If tools are used, show the Acknowledgement
+        if (response.acknowledgement_message) {
+            const ackP = document.createElement('p');
+            ackP.style.fontStyle = 'italic';
+            ackP.style.color = '#8b949e';
+            ackP.style.marginBottom = '0.5rem';
+            ackP.textContent = `🤖 ${response.acknowledgement_message}`;
+            botMessageDiv.appendChild(ackP);
+        }
+
+        // If a plan exists, visualize it briefly
+        if (response.plan && response.plan.plan) {
+            const planDiv = document.createElement('div');
+            planDiv.style.fontSize = '0.85em';
+            planDiv.style.backgroundColor = 'rgba(0,0,0,0.2)';
+            planDiv.style.padding = '5px';
+            planDiv.style.borderRadius = '4px';
+            planDiv.style.marginBottom = '0.5rem';
+
+            const stepsCount = response.plan.plan.length;
+            const toolsNames = response.plan.plan.map(s => s.tool_name).join(', ');
+            planDiv.innerHTML = `<strong>Executing Plan (${stepsCount} steps):</strong> ${toolsNames}`;
+            botMessageDiv.appendChild(planDiv);
+        }
+
+        // Create container for the final streamed text
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'streamed-content';
+        botMessageDiv.appendChild(contentDiv);
+
+        // Start Streaming
+        if (response.final_response_stream_url) {
+            streamBotResponse(response.final_response_stream_url, contentDiv, { input, button: submitButton });
+        } else {
+            // Fallback if URL is missing
+            contentDiv.textContent = "(No response stream URL provided)";
+            input.disabled = false;
+            submitButton.disabled = false;
+            submitButton.textContent = 'Send';
+        }
+
     } catch (error) {
         ui.showToast(`Error in test chat: ${error.message}`, 'error');
         const errorDiv = document.createElement('div');
         errorDiv.className = 'bot-message error';
         errorDiv.innerHTML = `<p>Error: ${error.message}</p>`;
         messagesContainer.appendChild(errorDiv);
-    } finally {
-        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
         input.disabled = false;
         submitButton.disabled = false;
         submitButton.textContent = 'Send';
-        input.focus();
+    } finally {
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
 }
 
@@ -429,7 +552,7 @@ async function handleShowUserDetails(botId, userId) {
     ui.showSpinner();
     try {
         // The searchUser API is used to get the full profile with notes
-        const userDetailsList = await api.searchUser(botId, query);
+        const userDetailsList = await api.searchUser(botId, userId);
         if (userDetailsList && userDetailsList.length > 0) {
             const userDetail = userDetailsList[0];
             ui.renderUserDetailView(userDetail, getUserKbEventHandlers(botId));

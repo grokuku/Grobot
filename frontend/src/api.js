@@ -275,17 +275,37 @@ export async function deleteFile(uuid) {
 }
 
 /**
- * Sends a message to the test chat endpoint.
+ * Sends a message to the bot and returns the orchestrator's response.
+ * UPDATED to match the new `ProcessMessageRequest` schema and endpoint.
  * @param {number} botId - The ID of the bot.
  * @param {string} message - The user's message.
  * @returns {Promise<object>} - The bot's response object.
  */
 export async function sendTestChatMessage(botId, message) {
-    const response = await fetchWithAuth(`${API_BASE_URL}/chat/test`, {
+    // Generate a dummy message ID for tracking the stream
+    const messageId = "web-" + Date.now().toString();
+
+    // Construct the payload expected by app.schemas.chat_schemas.ProcessMessageRequest
+    const payload = {
+        bot_id: parseInt(botId, 10),
+        message_id: messageId,
+        channel_id: "web-test-channel",
+        user_id: "web-user",
+        user_name: "WebAdmin",
+        user_display_name: "Web Admin",
+        message_content: message, // --- FIX: Renamed 'content' to 'message_content' to match backend schema
+        is_direct_message: true,
+        is_direct_mention: true,
+        history: [] // We could manage history in local state if needed
+    };
+
+    // Use the correct endpoint: /api/chat/process_message
+    const response = await fetchWithAuth(`${API_BASE_URL}/chat/process_message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bot_id: botId, user_message: message }),
+        body: JSON.stringify(payload),
     });
+
     if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.detail || 'Failed to send test message');

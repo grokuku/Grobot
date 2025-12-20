@@ -138,6 +138,40 @@ def resolve_llm_config(
 
     return LLMConfig(**resolved_config)
 
+# --- NEW: Message Preparation Helper ---
+
+def _prepare_messages_for_inference(messages: List[Union[Dict[str, Any], BaseModel]]) -> List[Dict[str, Any]]:
+    """
+    Prepares messages for the LLM by explicitly injecting the sender's name AND ID into the content.
+    This ensures that the model can distinguish between different users and maintains persistence
+    even if a user changes their display name.
+    """
+    prepared_messages = []
+    for msg in messages:
+        # Normalize to dict and create a copy to avoid side effects
+        msg_dict = msg.model_dump() if isinstance(msg, BaseModel) else msg.copy()
+        
+        # Inject name and ID into content if present and role is user
+        if msg_dict.get("role") == "user":
+            name = msg_dict.get("name", "Unknown User")
+            user_id = msg_dict.get("user_id")
+            original_content = msg_dict.get("content", "")
+            
+            # Format: "Name (ID: 12345): Message" or "Name: Message"
+            if user_id:
+                msg_dict["content"] = f"{name} (ID: {user_id}): {original_content}"
+            else:
+                msg_dict["content"] = f"{name}: {original_content}"
+            
+            # Remove metadata keys to keep the payload clean for Ollama
+            msg_dict.pop("name", None)
+            msg_dict.pop("user_id", None)
+            
+        prepared_messages.append(msg_dict)
+    return prepared_messages
+
+# --- Async LLM Call Functions ---
+
 async def call_llm(
     config: LLMConfig,
     system_prompt: str,
@@ -151,9 +185,9 @@ async def call_llm(
     try:
         client = ollama.AsyncClient(host=config.server_url)
         
-        # The ollama client expects a list of dicts, not Pydantic models
-        dict_messages = [msg.model_dump() if isinstance(msg, BaseModel) else msg for msg in messages]
-        full_messages = [{"role": "system", "content": system_prompt}] + dict_messages
+        # PREPARE MESSAGES: Inject names/IDs into content for context awareness
+        prepared_messages = _prepare_messages_for_inference(messages)
+        full_messages = [{"role": "system", "content": system_prompt}] + prepared_messages
         
         request_params = {
             "model": config.model_name,
@@ -167,7 +201,7 @@ async def call_llm(
 
         response = await client.chat(**request_params)
         
-        # Log the interaction
+        # Log the interaction (using original messages for clarity)
         log_llm_interaction(config, system_prompt, messages, response, json_mode)
         
         return response['message']['content']
@@ -193,9 +227,9 @@ async def call_llm_stream(
         logger.debug(f"Initializing Ollama chat stream for model {config.model_name}...")
         client = ollama.AsyncClient(host=config.server_url)
         
-        # The ollama client expects a list of dicts, not Pydantic models
-        dict_messages = [msg.model_dump() if isinstance(msg, BaseModel) else msg for msg in messages]
-        full_messages = [{"role": "system", "content": system_prompt}] + dict_messages
+        # PREPARE MESSAGES: Inject names/IDs into content for context awareness
+        prepared_messages = _prepare_messages_for_inference(messages)
+        full_messages = [{"role": "system", "content": system_prompt}] + prepared_messages
         
         request_params = {
             "model": config.model_name,

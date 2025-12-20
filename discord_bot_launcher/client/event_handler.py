@@ -46,9 +46,10 @@ async def _fetch_history(message: discord.Message, limit: int = 10) -> List[Dict
             role = "assistant" if msg.author.id == _bot_instance.user.id else "user"
             clean_content = await _replace_mentions(msg.content, msg)
             message_data = {"role": role, "content": clean_content}
-            # Add the author's name for user messages
+            # Add the author's name and ID for user messages
             if role == "user":
                 message_data["name"] = msg.author.display_name
+                message_data["user_id"] = str(msg.author.id)
             history.append(message_data)
     history.reverse()
     return history
@@ -150,11 +151,12 @@ async def on_message(message: discord.Message):
         clean_current_content = await _replace_mentions(message.content, message)
 
         history = await _fetch_history(message)
-        # Add the current message with the author's name
+        # Add the current message with the author's name AND ID
         history.append({
             "role": "user",
             "content": clean_current_content,
-            "name": message.author.display_name
+            "name": message.author.display_name,
+            "user_id": str(message.author.id)
         })
         
         response = await _api_client_instance.process_message(

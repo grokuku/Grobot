@@ -1,5 +1,3 @@
---- START OF FILE project_context.md ---
-
 ---
 ### AXIOMES FONDAMENTAUX DE LA SESSION ###
 ---
@@ -260,35 +258,36 @@ Chaque outil retourné respecte le JSON Schema standard. Le backend injecte dés
 
 ### 7.1. Bugs Connus et Régression (Issues Actuellement Ouvertes)
 
-*   **Incohérence Schéma Base de Données (`WorkflowStep`)**
-    *   **Statut :** MIGRATION PROPOSÉE (`3e4f5a6b7c8d_fix_workflow_steps_nullable.py`). À appliquer.
+*   **Backend - Planner "Empty Plan" :**
+    *   **Symptôme :** Malgré une identification correcte de l'outil requis (`get_current_time`) par le `Tool Identifier`, l'agent `Planner` renvoie une liste de plans vide (`"plan": []`).
+    *   **Cause probable :** La contrainte stricte ajoutée au prompt du Planner (`!!! STRICT CONSTRAINT !!! Only use [allowed_tools]`) ou le formatage de l'input JSON nettoyé (`clean_params_input`) peut perturber le modèle actuel (`huihui_ai/devstral-abliterated:24b-24k`). Il "n'ose" peut-être plus proposer d'étapes.
+    *   **Statut :** CRITIQUE (Bloque l'exécution des outils).
 
-*   **Timeout de la commande `/prompt_generator` et Échec de l'Autocomplétion des Styles**
-    *   **Statut :** EN COURS D'INVESTIGATION.
+*   **Frontend - Test Chat - Affichage JSON Brut :**
+    *   **Symptôme :** L'interface de test affiche des objets JSON bruts (`{"content": "..."}`) au lieu du texte du message.
+    *   **Cause :** La fonction `streamBotResponse` dans `events.js` injecte `event.data` directement dans le DOM. Or, le flux SSE envoie des chaînes JSON stringifiées. Il manque un `JSON.parse(chunk).content`.
+    *   **Statut :** MAJEUR (Expérience utilisateur dégradée).
 
-*   **Problème d'Interface Utilisateur dans l'Onglet "Memory"**
-    *   **Statut :** NON RÉSOLU.
-
-*   **Outils non Fonctionnels dans l'Interface de Test (Web)**
-    *   **Statut :** RÉSOLU (Correction Server-Side Starlette + Routage + Prompting + Orchestrateur).
-
-*   **Suppression de Bot Impossible**
-    *   **Statut :** NON RÉSOLU.
+*   **Infrastructure - Serveurs MCP Inaccessibles :**
+    *   **Symptôme :** Erreurs `405 Method Not Allowed` lors de la connexion aux serveurs sur `mtp-sd-swarm00`.
+    *   **Statut :** EXTERNE (Géré proprement par le backend via `try/except`, n'empêche pas les autres outils de fonctionner).
 
 ### 7.2. Fonctionnalités Récemment Implémentées
 
-*   **Stabilisation Critique des Outils MCP :** Correction du conflit ASGI ("Double Response") dans Starlette, implémentation d'une découverte d'outils tolérante aux pannes, enrichissement des prompts pour le choix des outils (inclusion des arguments), correction des données de connexion en base (typo `/mpc`) et amélioration de l'outil de temps pour parser les offsets (ex: UTC+2).
-*   **Migration Complète vers le Standard MCP (SSE + mcp-use)** : Refonte totale de la couche d'outils.
+*   **Stabilisation Critique Backend MCP :** Migration complète vers `mcp-use`, ajout de la tolérance aux pannes pour la découverte des outils (isolation par serveur), correction du format de lecture des résultats dans `synthesizer.py` (lecture de `text_content`).
+*   **Alignement API/Frontend :** Correction des divergences de schéma (`message_content` vs `content`) et des endpoints (`/api/chat/process_message`).
+*   **Sécurisation du Planner :** Tentative de correction des hallucinations en injectant une liste blanche d'outils et en nettoyant l'input JSON (en cours de débogage).
 *   **Backend Configuration LLM par Catégorie**
 *   **Implémentation de l'Enrichissement du Contexte (ACE - Phase 2)**
 *   **Implémentation de l'Apprentissage Continu (ACE - Phase 1)**
-*   **Gestion Fine des Permissions par Salon**
 
 ### 7.5. Plan d'Action pour la Prochaine Session
 
-1.  **Appliquer la Migration de Schéma :** `fix_workflow_steps_nullable`.
-2.  **Réparer l'Interface de Test Chat (Web) :** Adapter le frontend pour qu'il gère les réponses des outils.
-3.  **Investiguer le problème de suppression de bot.**
+1.  **Réparer l'affichage du Test Chat :** Modifier `frontend/src/events.js` pour parser le JSON du flux SSE avant affichage.
+2.  **Déboguer le Planner :**
+    *   Vérifier les logs pour voir exactement ce que le Planner reçoit.
+    *   Assouplir légèrement le prompt ou formater différemment la liste des outils autorisés pour que le modèle `devstral` comprenne qu'il a le *droit* et le *devoir* d'utiliser l'outil identifié.
+3.  **Vérifier la chaîne complète :** Une fois le Planner débloqué, s'assurer que l'exécution MCP et la synthèse finale fonctionnent de bout en bout.
 
 ---
 

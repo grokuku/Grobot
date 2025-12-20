@@ -1,4 +1,4 @@
-#### Fichier: app/core/agent_orchestrator.py
+# app/core/agent_orchestrator.py
 import logging
 from typing import Union, List, Dict, Any, Optional, AsyncGenerator
 import asyncio
@@ -195,10 +195,18 @@ async def process_user_message(
     # --- 4. Planning Step (Category: Tools) ---
     logger.info("All required parameters are present. Proceeding to planning.")
     
-    # Inject Playbook content into Planner prompt
-    planner_prompt = prompts.PLANNER_SYSTEM_PROMPT.format(ace_playbook=playbook_content)
+    # --- BUG FIX: Create string of allowed tools and clean input ---
+    allowed_tools_str = ", ".join(required_tool_names)
+    clean_params_input = json.dumps(param_ext_result.extracted_parameters)
+
+    # Inject Playbook content AND Allowed Tools into Planner prompt
+    planner_prompt = prompts.PLANNER_SYSTEM_PROMPT.format(
+        ace_playbook=playbook_content,
+        allowed_tools=allowed_tools_str
+    )
     
-    planner_messages = [{"role": "user", "content": f"Create a plan for these tools and parameters: {param_ext_result.model_dump_json()}"}]
+    planner_messages = [{"role": "user", "content": f"Create a plan for these tools and parameters: {clean_params_input}"}]
+    
     response_str = await llm_manager.call_llm(tools_config, planner_prompt, planner_messages, json_mode=True)
 
     try:
@@ -279,7 +287,7 @@ async def run_synthesis_phase(
 async def get_available_tools_for_bot(db: Session, bot_id: int) -> List[Dict[str, Any]]:
     """
     Fetches available tools using MCP-Use.
-    Iterates over servers individually to isolate failures (e.g., if one server is down).
+    Iterates over each server individually to isolate failures.
     """
     logger.info(f"Fetching available tools for bot_id: {bot_id} (via MCP-Use)")
     mcp_servers = crud_mcp.get_mcp_servers_for_bot(db, bot_id=bot_id)
@@ -414,7 +422,11 @@ async def execute_tool_plan(
                             content_list.append(str(item))
                     
                     # Join text content for simple LLM consumption
-                    final_output = {"text_content": "\n".join(content_list), "raw_mcp_content": [c.model_dump() if hasattr(c, 'model_dump') else str(c) for c in result_obj.content]}
+                    final_output = {
+                        "text_content": "\n".join(content_list), 
+                        # We dump the raw content for potential advanced processing later
+                        "raw_mcp_content": [c.model_dump() if hasattr(c, 'model_dump') else str(c) for c in result_obj.content]
+                    }
                 else:
                     final_output = {"result": str(result_obj)}
 
