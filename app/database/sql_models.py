@@ -27,16 +27,20 @@ class GlobalSettings(Base):
     decisional_llm_server_url = Column(String, nullable=True, default="http://host.docker.internal:11434")
     decisional_llm_model = Column(String, nullable=True) # MODIFIED
     decisional_llm_context_window = Column(Integer, nullable=True, default=4096) # MODIFIED
+    decisional_llm_api_key = Column(String, nullable=True) # NEW: API key for decisional LLM
 
     tools_llm_server_url = Column(String, nullable=True, default="http://host.docker.internal:11434")
     tools_llm_model = Column(String, nullable=True) # MODIFIED
     tools_llm_context_window = Column(Integer, nullable=True, default=8192) # MODIFIED
+    tools_llm_api_key = Column(String, nullable=True) # NEW: API key for tools LLM
 
     output_client_llm_server_url = Column(String, nullable=True, default="http://host.docker.internal:11434")
     output_client_llm_model = Column(String, nullable=True) # MODIFIED
     output_client_llm_context_window = Column(Integer, nullable=True, default=16384) # MODIFIED
+    output_client_llm_api_key = Column(String, nullable=True) # NEW: API key for output client LLM
 
     multimodal_llm_model = Column(String, nullable=True, default="llava") # MODIFIED
+    multimodal_llm_api_key = Column(String, nullable=True) # NEW: API key for multimodal LLM
 
     # --- Image Generation Service Settings ---
     image_generation_provider = Column(String, nullable=True, default="comfyui")
@@ -112,16 +116,20 @@ class Bot(Base):
     decisional_llm_server_url = Column(String, nullable=True)
     decisional_llm_model = Column(String, nullable=True)
     decisional_llm_context_window = Column(Integer, nullable=True)
+    decisional_llm_api_key = Column(String, nullable=True) # NEW: API key override for decisional LLM
 
     tools_llm_server_url = Column(String, nullable=True)
     tools_llm_model = Column(String, nullable=True)
     tools_llm_context_window = Column(Integer, nullable=True)
+    tools_llm_api_key = Column(String, nullable=True) # NEW: API key override for tools LLM
 
     output_client_llm_server_url = Column(String, nullable=True)
     output_client_llm_model = Column(String, nullable=True)
     output_client_llm_context_window = Column(Integer, nullable=True)
+    output_client_llm_api_key = Column(String, nullable=True) # NEW: API key override for output client LLM
 
     multimodal_llm_model = Column(String, nullable=True)
+    multimodal_llm_api_key = Column(String, nullable=True) # NEW: API key override for multimodal LLM
 
     image_generation_settings = Column(JSON, nullable=True)
     settings = Column(JSON, default=dict)

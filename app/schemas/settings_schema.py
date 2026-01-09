@@ -5,8 +5,9 @@ from datetime import datetime
 # --- Schéma pour la liste des modèles LLM ---
 class LLMModel(BaseModel):
     name: str = Field(..., alias='model')
-    modified_at: datetime
-    size: int
+    modified_at: Optional[datetime] = None
+    size: Optional[int] = None
+    description: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -17,17 +18,23 @@ class GlobalSettingsBase(BaseModel):
     decisional_llm_server_url: Optional[str] = Field(None, description="Default server URL for decisional category LLMs.", alias="default_decisional_llm_server")
     decisional_llm_model: Optional[str] = Field(None, description="Default model name for decisional category LLMs.", alias="default_decisional_llm_model")
     decisional_llm_context_window: Optional[int] = Field(None, gt=0, description="Default context window size for decisional LLMs.", alias="default_decisional_llm_context_window")
+    decisional_llm_api_key: Optional[str] = Field(None, description="API key for decisional category LLMs.", alias="default_decisional_llm_api_key")
 
     tools_llm_server_url: Optional[str] = Field(None, description="Default server URL for tools category LLMs.", alias="default_tool_llm_server")
     tools_llm_model: Optional[str] = Field(None, description="Default model name for tools category LLMs.", alias="default_tool_llm_model")
     tools_llm_context_window: Optional[int] = Field(None, gt=0, description="Default context window size for tools LLMs.", alias="default_tool_llm_context_window")
+    tools_llm_api_key: Optional[str] = Field(None, description="API key for tools category LLMs.", alias="default_tool_llm_api_key")
 
     output_client_llm_server_url: Optional[str] = Field(None, description="Default server URL for client output category LLMs.", alias="default_output_llm_server")
     output_client_llm_model: Optional[str] = Field(None, description="Default model name for client output category LLMs.", alias="default_output_llm_model")
     output_client_llm_context_window: Optional[int] = Field(None, gt=0, description="Default context window size for client output LLMs.", alias="default_output_llm_context_window")
+    output_client_llm_api_key: Optional[str] = Field(None, description="API key for client output category LLMs.", alias="default_output_llm_api_key")
 
     multimodal_llm_model: Optional[str] = Field(
         None, description="The name of the multimodal LLM model to use for image analysis."
+    )
+    multimodal_llm_api_key: Optional[str] = Field(
+        None, description="API key for multimodal LLM.", alias="multimodal_llm_api_key"
     )
     context_header_default_prompt: Optional[str] = Field(
         None, description="The default prompt template for the context header."

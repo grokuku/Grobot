@@ -425,12 +425,13 @@ function renderEvaluationResults(container, results) {
 
 function createLlmConfigBlock(
     category, title, helpText, draftState,
-    serverValue, modelValue, contextValue,
+    serverValue, modelValue, contextValue, apiKeyValue,
     fieldIdPrefix = ''
 ) {
     const serverField = `${fieldIdPrefix}${category}_llm_server`;
     const modelField = `${fieldIdPrefix}${category}_llm_model`;
     const contextField = `${fieldIdPrefix}${category}_llm_context_window`;
+    const apiKeyField = `${fieldIdPrefix}${category}_llm_api_key`;
     const resultsContainerId = `evaluation-results-${fieldIdPrefix}${category}`;
 
     const fieldset = document.createElement('fieldset');
@@ -452,6 +453,10 @@ function createLlmConfigBlock(
                 <div>
                     <label for="${contextField}">Context Window</label>
                     <input type="number" id="${contextField}" name="${contextField}" value="${contextValue || ''}" placeholder="e.g., 8192">
+                </div>
+                <div>
+                    <label for="${apiKeyField}">API Key</label>
+                    <input type="password" id="${apiKeyField}" name="${apiKeyField}" value="${apiKeyValue ? '********' : ''}" placeholder="Leave empty for Ollama/local servers">
                 </div>
             </div>
             <div class="form-actions" style="margin-top: 0.5rem; justify-content: flex-end;">
@@ -516,19 +521,22 @@ function renderBotSettingsLlmTab(bot, draftBot, container) {
 
     const decisionalBlock = createLlmConfigBlock(
         'decisional', 'Decisional Model', 'Fast model for simple tasks...', draftBot,
-        bot.decisional_llm_server_url, bot.decisional_llm_model, bot.decisional_llm_context_window
+        bot.decisional_llm_server_url, bot.decisional_llm_model, bot.decisional_llm_context_window,
+        bot.decisional_llm_api_key
     );
 
     const toolBlock = createLlmConfigBlock(
         'tools', // MODIFIED: Corrected category name from 'tool' to 'tools'
         'Tool-Use Model', 'Model with strong logical reasoning...', draftBot,
-        bot.tools_llm_server_url, bot.tools_llm_model, bot.tools_llm_context_window
+        bot.tools_llm_server_url, bot.tools_llm_model, bot.tools_llm_context_window,
+        bot.tools_llm_api_key
     );
 
     const outputBlock = createLlmConfigBlock(
         'output_client', // MODIFIED: Corrected category name from 'output' to 'output_client'
         'Client-Facing Output Model', 'Powerful, creative model...', draftBot,
-        bot.output_client_llm_server_url, bot.output_client_llm_model, bot.output_client_llm_context_window
+        bot.output_client_llm_server_url, bot.output_client_llm_model, bot.output_client_llm_context_window,
+        bot.output_client_llm_api_key
     );
 
     container.appendChild(decisionalBlock);
@@ -697,6 +705,7 @@ export async function renderGlobalSettingsForm(settings, eventHandlers) {
         settings.default_decisional_llm_server,
         settings.default_decisional_llm_model,
         settings.default_decisional_llm_context_window,
+        settings.default_decisional_llm_api_key,
         'default_'
     ));
     llmFieldset.appendChild(createLlmConfigBlock(
@@ -705,6 +714,7 @@ export async function renderGlobalSettingsForm(settings, eventHandlers) {
         settings.default_tool_llm_server,
         settings.default_tool_llm_model,
         settings.default_tool_llm_context_window,
+        settings.default_tool_llm_api_key,
         'default_'
     ));
     llmFieldset.appendChild(createLlmConfigBlock(
@@ -713,6 +723,7 @@ export async function renderGlobalSettingsForm(settings, eventHandlers) {
         settings.default_output_llm_server,
         settings.default_output_llm_model,
         settings.default_output_llm_context_window,
+        settings.default_output_llm_api_key,
         'default_'
     ));
     form.appendChild(llmFieldset);

@@ -958,6 +958,45 @@ input:checked+.slider:before {
     border-top: 1px solid var(--border-color);
 }
 
+/* ===== LLM CONFIG GRID ===== */
+.llm-config-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-md);
+}
+
+.llm-config-grid > div {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+}
+
+.llm-config-grid label {
+    margin-bottom: var(--spacing-xs);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.llm-config-grid input,
+.llm-config-grid select {
+    width: 100%;
+    padding: var(--spacing-sm);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 0.875rem;
+}
+
+.llm-config-grid input:focus,
+.llm-config-grid select:focus {
+    outline: none;
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 2px var(--accent-light);
+}
+
 /* ===== WORKFLOW EDITOR MODAL ===== */
 .workflow-step-card {
     background-color: var(--bg-primary);

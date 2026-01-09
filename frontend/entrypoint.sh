@@ -16,7 +16,7 @@ echo "Vérification et application des migrations de la base de données..."
 # Cela évite de devoir changer de répertoire (cd).
 # On utilise 'gosu' pour s'assurer que les permissions de fichiers sont correctes si
 # de nouveaux fichiers devaient être créés.
-gosu app_user python -m alembic -c /app/app/alembic.ini upgrade head
+gosu app_user python -m alembic -c /app/app/alembic.ini upgrade heads
 
 echo "Mise à jour de la base de données terminée."
 # --- FIN DE LA MISE À JOUR AUTOMATIQUE DE LA BASE DE DONNÉES ---

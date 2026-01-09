@@ -62,16 +62,20 @@ class BotCreate(BaseModel):
     decisional_llm_server_url: Optional[str] = None
     decisional_llm_model: Optional[str] = None
     decisional_llm_context_window: Optional[int] = Field(None, gt=0)
+    decisional_llm_api_key: Optional[str] = None  # NEW: API key for decisional LLM
     
     tools_llm_server_url: Optional[str] = None
     tools_llm_model: Optional[str] = None
     tools_llm_context_window: Optional[int] = Field(None, gt=0)
+    tools_llm_api_key: Optional[str] = None  # NEW: API key for tools LLM
     
     output_client_llm_server_url: Optional[str] = None
     output_client_llm_model: Optional[str] = None
     output_client_llm_context_window: Optional[int] = Field(None, gt=0)
+    output_client_llm_api_key: Optional[str] = None  # NEW: API key for output client LLM
 
     multimodal_llm_model: Optional[str] = None
+    multimodal_llm_api_key: Optional[str] = None  # NEW: API key for multimodal LLM
 
 class BotUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=50)
@@ -89,16 +93,20 @@ class BotUpdate(BaseModel):
     decisional_llm_server_url: Optional[str] = None
     decisional_llm_model: Optional[str] = None
     decisional_llm_context_window: Optional[int] = Field(None, gt=0)
+    decisional_llm_api_key: Optional[str] = None  # NEW: API key for decisional LLM
     
     tools_llm_server_url: Optional[str] = None
     tools_llm_model: Optional[str] = None
     tools_llm_context_window: Optional[int] = Field(None, gt=0)
+    tools_llm_api_key: Optional[str] = None  # NEW: API key for tools LLM
     
     output_client_llm_server_url: Optional[str] = None
     output_client_llm_model: Optional[str] = None
     output_client_llm_context_window: Optional[int] = Field(None, gt=0)
+    output_client_llm_api_key: Optional[str] = None  # NEW: API key for output client LLM
 
     multimodal_llm_model: Optional[str] = None
+    multimodal_llm_api_key: Optional[str] = None  # NEW: API key for multimodal LLM
     
     settings: Optional[Dict[str, Any]] = None
 
@@ -118,16 +126,20 @@ class Bot(BaseModel):
     decisional_llm_server_url: Optional[str] = None
     decisional_llm_model: Optional[str] = None
     decisional_llm_context_window: Optional[int] = None
+    decisional_llm_api_key: Optional[str] = None  # NEW: API key for decisional LLM
     
     tools_llm_server_url: Optional[str] = None
     tools_llm_model: Optional[str] = None
     tools_llm_context_window: Optional[int] = None
+    tools_llm_api_key: Optional[str] = None  # NEW: API key for tools LLM
     
     output_client_llm_server_url: Optional[str] = None
     output_client_llm_model: Optional[str] = None
     output_client_llm_context_window: Optional[int] = None
+    output_client_llm_api_key: Optional[str] = None  # NEW: API key for output client LLM
 
     multimodal_llm_model: Optional[str] = None
+    multimodal_llm_api_key: Optional[str] = None  # NEW: API key for multimodal LLM
 
     mcp_servers: List[MCPServerAssociationDetails] = []
 
