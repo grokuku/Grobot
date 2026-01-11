@@ -1,13 +1,14 @@
-# app/core/agent_orchestrator.py
 import logging
 from typing import Union, List, Dict, Any, Optional, AsyncGenerator
 import asyncio
 import json
 import os
+import re
 from pydantic import BaseModel
 
-# --- NEW: MCP-Use Import ---
+# --- NEW: MCP-Use Import & HTTPX for Exceptions ---
 from mcp_use import MCPClient
+import httpx
 # ---------------------------
 
 from sqlalchemy.orm import Session
@@ -23,6 +24,7 @@ from app.schemas.chat_schemas import (
     AcknowledgeAndExecuteResponse,
     SynthesizeResponse,
     PlannerResult,
+    ChatMessage # Import needed for constructing the message
 )
 
 # Database CRUD Imports
@@ -37,7 +39,7 @@ except ImportError:
     # Dummy class to prevent runtime errors if ACE is not present
     class Playbook: pass
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("app.core.agent_orchestrator")
 
 # --- Internal Pydantic models for response validation ---
 
@@ -48,7 +50,39 @@ class GatekeeperResponse(BaseModel):
 class ToolIdentifierResponse(BaseModel):
     required_tools: List[str]
 
-# --- Helper for Playbook Loading ---
+# --- Helpers ---
+
+def _clean_json_response(raw_response: str) -> str:
+    """
+    Cleans the LLM response to extract only the JSON part.
+    Removes <think> blocks and extracts the outermost JSON object or array.
+    """
+    if not raw_response:
+        return "{}"
+    
+    # 1. Remove DeepSeek reasoning blocks <think>...</think>
+    cleaned = re.sub(r"<think>.*?</think>", "", raw_response, flags=re.DOTALL)
+    
+    # 2. Robust Extraction: find the outermost braces or brackets
+    # This handles nested structures correctly unlike a non-greedy regex
+    start_obj = cleaned.find("{")
+    start_arr = cleaned.find("[")
+    
+    # Determine which starts first to handle both objects and lists
+    start_idx = -1
+    end_idx = -1
+    
+    if start_obj != -1 and (start_arr == -1 or start_obj < start_arr):
+        start_idx = start_obj
+        end_idx = cleaned.rfind("}")
+    elif start_arr != -1:
+        start_idx = start_arr
+        end_idx = cleaned.rfind("]")
+        
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        return cleaned[start_idx:end_idx+1]
+    
+    return cleaned.strip()
 
 def _load_bot_playbook_content(bot_id: int) -> str:
     """
@@ -91,6 +125,18 @@ async def process_user_message(
     # Load Playbook content early for use in Planner AND Tool Identifier
     playbook_content = _load_bot_playbook_content(bot.id)
 
+    # --- FIX: CONSTRUCT FULL HISTORY (History + Current Message) ---
+    # The request.history does NOT contain the current message. We must append it
+    # so the agents can see what the user actually said.
+    current_message = ChatMessage(
+        role="user", 
+        content=request.message_content, 
+        name=request.user_display_name
+    )
+    # We use a list of dicts for the LLM calls to be compatible
+    full_history_dicts = [msg.model_dump() for msg in request.history]
+    full_history_dicts.append(current_message.model_dump())
+
     # --- 1. Gatekeeper Step (Category: Decisional) ---
     bypass_gatekeeper = request.is_direct_message or request.is_direct_mention
     if not bypass_gatekeeper:
@@ -99,10 +145,12 @@ async def process_user_message(
         # Resolve config and call LLM
         decisional_config = llm_manager.resolve_llm_config(bot, global_settings, llm_manager.LLM_CATEGORY_DECISIONAL)
         gatekeeper_prompt = prompts.GATEKEEPER_SYSTEM_PROMPT.format(bot_name=bot.name)
-        response_str = await llm_manager.call_llm(decisional_config, gatekeeper_prompt, request.history, json_mode=True)
+        # FIX: Use full_history_dicts
+        response_str = await llm_manager.call_llm(decisional_config, gatekeeper_prompt, full_history_dicts, json_mode=True)
         
+        cleaned_response = _clean_json_response(response_str)
         try:
-            gatekeeper_decision = GatekeeperResponse.model_validate_json(response_str)
+            gatekeeper_decision = GatekeeperResponse.model_validate_json(cleaned_response)
             if not gatekeeper_decision.should_respond:
                 logger.info(f"Gatekeeper decided not to respond. Reason: {gatekeeper_decision.reason}. Stopping.")
                 return StopResponse(reason=gatekeeper_decision.reason)
@@ -149,15 +197,17 @@ async def process_user_message(
     logger.debug(f"Tool Identifier Prompt Preview: {tool_id_prompt[:200]}...")
 
     try:
-        response_str = await llm_manager.call_llm(tools_config, tool_id_prompt, request.history, json_mode=True)
+        # FIX: Use full_history_dicts
+        response_str = await llm_manager.call_llm(tools_config, tool_id_prompt, full_history_dicts, json_mode=True)
         logger.info("LLM Response received for Tool Identifier.")
         logger.debug(f"Raw Tool Identifier Response: {response_str}")
     except Exception as llm_error:
         logger.error(f"CRITICAL ERROR during Tool Identifier LLM call: {llm_error}", exc_info=True)
         response_str = "{}"
 
+    cleaned_response = _clean_json_response(response_str)
     try:
-        tool_id_result = ToolIdentifierResponse.model_validate_json(response_str)
+        tool_id_result = ToolIdentifierResponse.model_validate_json(cleaned_response)
         available_tool_names = {tool['name'] for tool in available_tools}
         required_tool_names = [name for name in tool_id_result.required_tools if name in available_tool_names]
         logger.info(f"Identified required tools: {required_tool_names}")
@@ -173,12 +223,35 @@ async def process_user_message(
     logger.info(f"Required tools identified: {required_tool_names}. Extracting parameters...")
     required_tool_definitions = [tool for tool in available_tools if tool.get("name") in required_tool_names]
     
-    param_ext_prompt = prompts.PARAMETER_EXTRACTOR_SYSTEM_PROMPT # No formatting needed
-    response_str = await llm_manager.call_llm(tools_config, param_ext_prompt, request.history, json_mode=True)
+    # --- FIXED: Format schemas string and inject into prompt ---
+    tool_schemas_str = ""
+    for td in required_tool_definitions:
+        tool_schemas_str += f"- Tool: {td['name']}\n  Schema: {json.dumps(td.get('inputSchema', {}))}\n"
+    
+    param_ext_prompt = prompts.PARAMETER_EXTRACTOR_SYSTEM_PROMPT.format(
+        tool_schemas=tool_schemas_str
+    )
+    
+    # FIX: Use full_history_dicts
+    response_str = await llm_manager.call_llm(tools_config, param_ext_prompt, full_history_dicts, json_mode=True)
 
+    cleaned_response = _clean_json_response(response_str)
     try:
         from app.schemas.chat_schemas import ParameterExtractorResult
-        param_ext_result = ParameterExtractorResult.model_validate_json(response_str)
+        param_ext_result = ParameterExtractorResult.model_validate_json(cleaned_response)
+        
+        # --- SAFETY CHECK: Filter out hallucinations ---
+        # Remove any extracted parameters for tools NOT in the required list
+        param_ext_result.extracted_parameters = {
+            k: v for k, v in param_ext_result.extracted_parameters.items() 
+            if k in required_tool_names
+        }
+        # Remove missing parameter flags for tools NOT in the required list
+        param_ext_result.missing_parameters = [
+            m for m in param_ext_result.missing_parameters 
+            if m.tool in required_tool_names
+        ]
+        
     except Exception as e:
         logger.error(f"Failed to parse Parameter Extractor response: {e}. Stopping. Raw: '{response_str}'")
         return StopResponse(reason="Internal error in Parameter Extractor response parsing.")
@@ -209,8 +282,9 @@ async def process_user_message(
     
     response_str = await llm_manager.call_llm(tools_config, planner_prompt, planner_messages, json_mode=True)
 
+    cleaned_response = _clean_json_response(response_str)
     try:
-        plan_result = PlannerResult.model_validate_json(response_str)
+        plan_result = PlannerResult.model_validate_json(cleaned_response)
         if not plan_result.plan:
             raise ValueError("Planner returned an empty plan.")
     except Exception as e:
@@ -288,6 +362,7 @@ async def get_available_tools_for_bot(db: Session, bot_id: int) -> List[Dict[str
     """
     Fetches available tools using MCP-Use.
     Iterates over each server individually to isolate failures.
+    Includes retry logic for unstable SSE connections.
     """
     logger.info(f"Fetching available tools for bot_id: {bot_id} (via MCP-Use)")
     mcp_servers = crud_mcp.get_mcp_servers_for_bot(db, bot_id=bot_id)
@@ -311,29 +386,46 @@ async def get_available_tools_for_bot(db: Session, bot_id: int) -> List[Dict[str
             }
         }
         
-        try:
-            # Instantiate a fresh client for this server
-            client = MCPClient(single_server_config)
-            await client.create_all_sessions()
-            
-            session = client.get_session(server_key)
-            if session:
-                tools = await session.list_tools()
-                for tool in tools:
-                    all_tools.append({
-                        "name": tool.name,
-                        "description": tool.description or "",
-                        "inputSchema": tool.inputSchema or {},
-                        "server_id": server.id 
-                    })
-                logger.info(f"Successfully discovered {len(tools)} tools from server {server.name}")
-            else:
-                logger.warning(f"No session created for server {server.name}")
+        # --- RETRY LOGIC FOR DISCOVERY ---
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Instantiate a fresh client for this server
+                client = MCPClient(single_server_config)
+                await client.create_all_sessions()
                 
-        except Exception as e:
-            # Log error but CONTINUE to next server
-            logger.error(f"Discovery failed for server {server.name} ({base_url}): {e}")
-            continue
+                session = client.get_session(server_key)
+                if session:
+                    tools = await session.list_tools()
+                    for tool in tools:
+                        all_tools.append({
+                            "name": tool.name,
+                            "description": tool.description or "",
+                            "inputSchema": tool.inputSchema or {},
+                            "server_id": server.id 
+                        })
+                    logger.info(f"Successfully discovered {len(tools)} tools from server {server.name}")
+                    
+                    # Explicit cleanup (Best effort if supported by library or context)
+                    # Currently mcp-use doesn't expose a clean way to close 'client' 
+                    # but we can try closing the session if accessible.
+                    # Assuming Garbage Collection handles it, but connection drop issues might persist.
+                    # Success -> Break retry loop
+                    break
+                else:
+                    logger.warning(f"No session created for server {server.name}")
+                    break # No session means config error usually, don't retry network
+
+            except (httpx.RemoteProtocolError, httpx.ReadTimeout, httpx.ConnectError) as net_err:
+                logger.warning(f"Network error discovering tools on {server.name} (Attempt {attempt+1}/{max_retries}): {net_err}")
+                if attempt == max_retries - 1:
+                    logger.error(f"Final failure for server {server.name}: {net_err}")
+                else:
+                    await asyncio.sleep(0.5) # Brief backoff
+            except Exception as e:
+                # Log error but CONTINUE to next server (do not break global loop)
+                logger.error(f"Discovery failed for server {server.name} ({base_url}): {e}")
+                break
     
     return all_tools
 
@@ -345,6 +437,7 @@ async def execute_tool_plan(
 ) -> List[Dict[str, Any]]:
     """
     Executes the planned tools using MCP-Use.
+    Includes retry logic for unstable SSE connections.
     """
     logger.info(f"Starting execution of plan for bot {bot_id} using MCP-Use")
     tool_execution_results = []
@@ -360,7 +453,6 @@ async def execute_tool_plan(
     
     # 2. Build MCP Config for involved servers
     mcp_config = {"mcpServers": {}}
-    server_map = {} # Map ID to model for logging
     
     for server_id in involved_server_ids:
         # Retrieve server details (using associations ensures we only get active/associated ones)
@@ -372,15 +464,22 @@ async def execute_tool_plan(
                 "transport": "sse",
                 "url": base_url,
             }
-            server_map[server_id] = server
 
     if not mcp_config["mcpServers"]:
         logger.error("No valid servers found for the plan. Skipping execution.")
         return []
 
-    # 3. Execute Steps
-    client = MCPClient(mcp_config)
+    # 3. Execute Steps with Retry Logic
+    max_retries = 3
+    
+    # We try to execute the WHOLE plan. If a connection drops, we recreate the client.
+    # Note: If a tool has side effects, retrying might be dangerous. 
+    # But here we handle connection errors mainly.
+    
+    client = None
     try:
+        # Initial Client Creation
+        client = MCPClient(mcp_config)
         await client.create_all_sessions()
         
         for step in sorted(plan_result.plan, key=lambda x: x.step):
@@ -397,47 +496,71 @@ async def execute_tool_plan(
             
             logger.info(f"Executing step {step.step}: calling tool '{tool_name}' on {server_key}")
 
-            session = client.get_session(server_key)
-            if not session:
-                logger.error(f"No active session for {server_key}")
-                tool_execution_results.append({"tool_name": tool_name, "result": {"error": "Server unavailable"}})
-                continue
+            # RETRY LOOP PER TOOL CALL
+            tool_success = False
+            last_error = None
+            
+            for attempt in range(max_retries):
+                try:
+                    session = client.get_session(server_key)
+                    if not session:
+                        # Try to recreate sessions if lost
+                        logger.warning(f"Session lost for {server_key}, attempting to reconnect...")
+                        await client.create_all_sessions()
+                        session = client.get_session(server_key)
+                        
+                    if not session:
+                        raise Exception(f"No active session for {server_key}")
 
-            try:
-                # CALL TOOL
-                result_obj = await session.call_tool(tool_name, step.arguments)
-                
-                # PROCESS RESULT (Convert MCP Content objects to dict/text)
-                final_output = {}
-                content_list = []
-                
-                # The result is likely a CallToolResult object with a 'content' list
-                if hasattr(result_obj, 'content') and isinstance(result_obj.content, list):
-                    for item in result_obj.content:
-                        if hasattr(item, 'type') and hasattr(item, 'text') and item.type == 'text':
-                            content_list.append(item.text)
-                        elif hasattr(item, 'type') and item.type == 'image':
-                             content_list.append(f"[Image Data: {item.mimeType}]")
-                        else:
-                            content_list.append(str(item))
+                    # CALL TOOL
+                    result_obj = await session.call_tool(tool_name, step.arguments)
                     
-                    # Join text content for simple LLM consumption
-                    final_output = {
-                        "text_content": "\n".join(content_list), 
-                        # We dump the raw content for potential advanced processing later
-                        "raw_mcp_content": [c.model_dump() if hasattr(c, 'model_dump') else str(c) for c in result_obj.content]
-                    }
-                else:
-                    final_output = {"result": str(result_obj)}
+                    # PROCESS RESULT
+                    final_output = {}
+                    content_list = []
+                    
+                    if hasattr(result_obj, 'content') and isinstance(result_obj.content, list):
+                        for item in result_obj.content:
+                            if hasattr(item, 'type') and hasattr(item, 'text') and item.type == 'text':
+                                content_list.append(item.text)
+                            elif hasattr(item, 'type') and item.type == 'image':
+                                 content_list.append(f"[Image Data: {item.mimeType}]")
+                            else:
+                                content_list.append(str(item))
+                        
+                        final_output = {
+                            "text_content": "\n".join(content_list), 
+                            "raw_mcp_content": [c.model_dump() if hasattr(c, 'model_dump') else str(c) for c in result_obj.content]
+                        }
+                    else:
+                        final_output = {"result": str(result_obj)}
 
-                if getattr(result_obj, "isError", False):
-                     final_output["is_error"] = True
+                    if getattr(result_obj, "isError", False):
+                         final_output["is_error"] = True
 
-                tool_execution_results.append({"tool_name": tool_name, "result": final_output})
+                    tool_execution_results.append({"tool_name": tool_name, "result": final_output})
+                    tool_success = True
+                    break # Success
 
-            except Exception as e:
-                logger.error(f"Error executing tool {tool_name}: {e}")
-                tool_execution_results.append({"tool_name": tool_name, "result": {"error": str(e)}})
+                except (httpx.RemoteProtocolError, httpx.ReadTimeout) as net_err:
+                    last_error = net_err
+                    logger.warning(f"Network error executing {tool_name} (Attempt {attempt+1}/{max_retries}): {net_err}")
+                    # Recreate Client on network failure to ensure fresh sockets
+                    try:
+                        client = MCPClient(mcp_config)
+                        await client.create_all_sessions()
+                    except:
+                        pass
+                    await asyncio.sleep(0.5)
+
+                except Exception as e:
+                    last_error = e
+                    logger.error(f"Error executing tool {tool_name}: {e}")
+                    # Application error (not network), do not retry
+                    break
+            
+            if not tool_success:
+                 tool_execution_results.append({"tool_name": tool_name, "result": {"error": str(last_error)}})
 
     except Exception as e:
          logger.error(f"Fatal error in MCP execution loop: {e}", exc_info=True)

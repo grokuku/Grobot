@@ -4,6 +4,7 @@ import shutil
 import magic
 import base64
 import json
+import logging
 from pathlib import Path
 from PIL import Image
 from typing import List, Optional
@@ -13,8 +14,11 @@ from sqlalchemy.orm import Session
 
 from app.database import crud_files, sql_session, crud_settings
 from app.schemas import file_schemas
-# --- MODIFICATION 1: Remplacer l'ancien import par le nouveau module ---
-from app.core.llm import ollama_client
+
+# --- MODIFICATION: Import du nouveau manager ---
+from app.core.llm_manager import call_llm, LLMConfig, LLMProvider
+
+logger = logging.getLogger(__name__)
 
 # Define the base path for storing uploaded files, as mounted in docker-compose.yml
 FILES_STORAGE_PATH = Path("/app/files")
@@ -205,15 +209,18 @@ async def describe_image(
             is_from_cache=True
         )
 
-    # --- MODIFICATION 2: Utiliser le nouveau client LLM partagé ---
-    # On vérifie si le client a bien été initialisé au démarrage de l'app
-    client = ollama_client.llm_manager.get("client")
-    if not client:
-        raise HTTPException(status_code=503, detail="Ollama client is not initialized. Please configure the Ollama host in the global settings.")
-    
     settings = crud_settings.get_global_settings(db)
-    if not settings or not settings.multimodal_llm_model:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Multimodal LLM model is not configured.")
+    # Pour l'instant, on utilise le serveur décisionnel comme proxy pour le serveur multimodal
+    # Idéalement, il faudrait un champ spécifique 'multimodal_llm_server_url' dans les settings
+    llm_server_url = settings.decisional_llm_server_url
+    multimodal_model = settings.multimodal_llm_model
+
+    if not llm_server_url:
+         # Fallback default local
+        llm_server_url = "http://host.docker.internal:11434"
+
+    if not multimodal_model:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Multimodal LLM model is not configured in global settings.")
 
     try:
         with open(db_file.storage_path, "rb") as image_file:
@@ -221,20 +228,42 @@ async def describe_image(
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not read image file: {e}")
 
-    messages = [{"role": "user", "content": "Describe this image in detail.", "images": [encoded_image]}]
+    # Construction de la configuration pour l'appel LLM
+    # On suppose que le serveur multimodal est compatible Ollama pour l'instant
+    # (car l'injection d'images est très spécifique selon les providers)
+    llm_config = LLMConfig(
+        server_url=llm_server_url,
+        model_name=multimodal_model,
+        context_window=2048, # Petit contexte suffisant pour une description
+        provider=LLMProvider.AUTO, # Laisser le manager détecter
+        api_key=settings.decisional_llm_api_key
+    )
+
+    # Note: L'envoi d'image n'est pas standardisé dans LiteLLM de manière aussi simple que Ollama
+    # Pour l'instant, le LLM Manager tel que codé supporte mal les images génériques.
+    # On va faire une tentative best-effort en construisant le message avec le champ 'images' style Ollama.
+    # Si le provider détecté est Ollama, ça marchera.
+    
+    messages = [
+        {
+            "role": "user", 
+            "content": "Describe this image in detail.", 
+            "images": [encoded_image]
+        }
+    ]
     
     try:
-        # Remplacement de la boucle de streaming par un appel direct et simple
-        response = await client.chat(
-            model=str(settings.multimodal_llm_model),
+        full_description = await call_llm(
+            config=llm_config,
+            system_prompt="You are an AI assistant capable of analyzing images.",
             messages=messages
         )
-        full_description = response.get('message', {}).get('content', '').strip()
 
         if not full_description:
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="LLM returned an empty description.")
 
     except Exception as e:
+        logger.error(f"Error calling Multimodal LLM: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred with the LLM call: {e}")
 
     updated_file = crud_files.update_file_description(db, db_file, full_description)

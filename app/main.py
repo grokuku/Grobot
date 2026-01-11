@@ -2,14 +2,13 @@
 # FICHIER: app/main.py
 ####
 import logging
-import json # <-- ADDED
+import json
 from contextlib import asynccontextmanager
 import asyncio 
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect # <-- MODIFIED
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from app.api import (
     bots_api,
@@ -23,12 +22,16 @@ from app.api import (
     workflows_api
 )
 from app.api.mcp_api import background_discovery_task
-from app.core.websocket_manager import websocket_manager # <-- ADDED
+from app.core.websocket_manager import websocket_manager
 from app.database import sql_session
+from app.database.sql_session import engine
+
+# --- NOUVEAU : Import du gestionnaire de migration ---
+from app.database import migration
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-print("--- CHARGEMENT DE app/main.py (VERSION AVEC LIFESPAN ET INIT LLM) ---")
+print("--- CHARGEMENT DE app/main.py (VERSION MIGRATION ROBUSTE) ---")
 
 
 @asynccontextmanager
@@ -36,6 +39,20 @@ async def lifespan(app: FastAPI):
     # --- Logique de Démarrage ---
     logger.info("Application startup...")
     
+    # --- GESTION DE LA BASE DE DONNÉES (STRATÉGIE BLUE/GREEN) ---
+    try:
+        logger.info("Vérification du schéma de la base de données...")
+        
+        # On délègue toute la logique complexe au module de migration.
+        # Il va vérifier la version, et si nécessaire : renommage (backup), create_all, import data.
+        migration.migrate_if_needed(engine)
+        
+        logger.info("Base de données prête et opérationnelle.")
+    except Exception as e:
+        logger.critical(f"CRITICAL DATABASE ERROR DURING MIGRATION: {e}")
+        # Si la migration échoue, il vaut mieux arrêter l'appli pour ne pas corrompre plus de données
+        raise e
+
     logger.info("Starting background task for MCP tool discovery...")
     asyncio.create_task(background_discovery_task())
     
@@ -58,7 +75,7 @@ app.add_middleware(
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    logger.info(f"Request: {request.method} {request.url}")
+    # logger.info(f"Request: {request.method} {request.url}")
     response = await call_next(request)
     return response
 
@@ -70,13 +87,9 @@ async def websocket_endpoint(websocket: WebSocket, bot_id: int):
     try:
         while True:
             data = await websocket.receive_json()
-            logger.info(f"Received WebSocket message from bot {bot_id}: {data}")
-
-            # Check if this message is a response to a pending request
             if "request_id" in data and "response" in data:
                 websocket_manager.resolve_request(data["request_id"], data["response"])
             else:
-                # Handle other types of incoming messages if needed in the future
                 logger.warning(f"Unhandled WebSocket message from bot {bot_id}: {data}")
 
     except WebSocketDisconnect:
@@ -96,12 +109,6 @@ app.include_router(settings_api.router, prefix="/api", tags=["settings"])
 app.include_router(user_profiles_api.router, prefix="/api", tags=["user_profiles"])
 app.include_router(tools_api.router, prefix="/api", tags=["tools"])
 app.include_router(workflows_api.router, prefix="/api", tags=["workflows"])
-
-
-# --- Static Files ---
-# MODIFICATION : Suppression de cette ligne. Le service des fichiers statiques
-# est la responsabilité de Nginx dans cette architecture, pas de FastAPI.
-# app.mount("/", StaticFiles(directory="/app/src", html=True), name="static")
 
 
 # --- Exception Handlers ---

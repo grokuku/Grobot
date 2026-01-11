@@ -1,6 +1,3 @@
-####
-# FILE: discord_bot_launcher/client/api_client.py
-####
 import logging
 import json
 from typing import List, Dict, Any, Optional, AsyncGenerator
@@ -156,34 +153,65 @@ class APIClient:
     async def stream_final_response(self, stream_url: str) -> AsyncGenerator[str, None]:
         """
         Connects to a Server-Sent Events (SSE) stream and yields the content of each event.
+        Implements a robust SSE parser that handles event buffering and multi-line data.
+        INCLUDES DEBUG LOGGING.
         """
         url = f"{self._base_url}{stream_url}"
         logger.info(f"Connecting to SSE stream at {url}")
+        
         try:
             # surgical fix: specific timeout for streaming to handle LLM latency
             async with self._client.stream("GET", url, timeout=httpx.Timeout(600.0, read=None)) as response:
                 response.raise_for_status()
+                logger.warning(f"DEBUG: Stream connected! Status: {response.status_code}")
+                
+                buffer = []
                 async for line in response.aiter_lines():
-                    if line.startswith("data:"):
-                        try:
-                            data_str = line[len("data:"):].strip()
-                            if data_str:
-                                data = json.loads(data_str)
+                    # --- DEBUG SNIFFER START ---
+                    logger.warning(f"!!! RAW STREAM LINE: {repr(line)}")
+                    # --- DEBUG SNIFFER END ---
+
+                    # SSE spec: lines are trimmed of trailing newline, but we must handle whitespace carefully
+                    line = line.strip()
+                    
+                    if not line:
+                        # Empty line signals the end of an event block. Process the buffer.
+                        if buffer:
+                            # Join the data lines. Standard SSE just concatenates data.
+                            full_data = "\n".join(buffer)
+                            logger.warning(f"DEBUG: Processing buffer: {repr(full_data)}")
+                            buffer = [] # Reset buffer
+                            
+                            try:
+                                # Handle special [DONE] token if sent by some LLM providers
+                                if full_data.strip() == "[DONE]":
+                                    continue
+
+                                data = json.loads(full_data)
                                 if "content" in data:
                                     yield data["content"]
                                 elif "error" in data:
                                     logger.error(f"Received error from stream: {data['error']}")
                                     yield f"\n\n_Sorry, an error occurred while generating the response: {data['error']}_"
-                                    break
-                        except json.JSONDecodeError:
-                            logger.warning(f"Could not decode JSON from stream line: {line}")
-                            continue
+                                    # We don't break here, we let the stream finish naturally or by error
+                            except json.JSONDecodeError:
+                                logger.warning(f"Could not decode JSON from stream event: '{full_data}'")
+                                continue
+                        continue
+
+                    # Accumulate data lines
+                    if line.startswith("data:"):
+                        # Extract content after "data:" (ignoring optional space)
+                        content = line[5:].strip() 
+                        buffer.append(content)
+                    # We ignore 'event:', 'id:', 'retry:' as we only consume data.
+
         except httpx.HTTPStatusError as e:
             error_msg = f"Streaming connection failed with status {e.response.status_code}: {e.response.text}"
             logger.error(error_msg)
             yield f"\n\n_Sorry, I couldn't retrieve the final response. {error_msg}_"
         except Exception as e:
-            logger.error(f"An unexpected error occurred during streaming: {e}", exc_info=True)
+            logger.error(f"An unexpected error occurred during streaming: {type(e).__name__}: {e}", exc_info=True)
             # surgical fix: show the exact error type and message for debugging
             yield f"\n\n_Sorry, a critical error occurred while retrieving the final response ({type(e).__name__}: {e})._"
 

@@ -8,19 +8,9 @@ set -e
 # Donner la propriété du répertoire des fichiers à l'utilisateur de l'application
 chown -R app_user:app_group /app/files
 
-
-# --- DÉBUT DE LA MISE À JOUR AUTOMATIQUE DE LA BASE DE DONNÉES ---
-echo "Vérification et application des migrations de la base de données..."
-
-# On exécute la mise à jour de la base de données en spécifiant le chemin de la configuration.
-# Cela évite de devoir changer de répertoire (cd).
-# On utilise 'gosu' pour s'assurer que les permissions de fichiers sont correctes si
-# de nouveaux fichiers devaient être créés.
-gosu app_user python -m alembic -c /app/app/alembic.ini upgrade heads
-
-echo "Mise à jour de la base de données terminée."
-# --- FIN DE LA MISE À JOUR AUTOMATIQUE DE LA BASE DE DONNÉES ---
-
+# NOTE: La gestion de la base de données (création des tables) est désormais gérée
+# directement par l'application (main.py) au démarrage via SQLAlchemy natif.
+# L'étape explicite 'alembic upgrade' a été supprimée.
 
 # Démarre le serveur Uvicorn en arrière-plan avec UN SEUL WORKER.
 # C'est crucial pour que le gestionnaire de logs en mémoire (LogManager) soit partagé

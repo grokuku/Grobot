@@ -7,6 +7,8 @@ services:
       - ./data/postgres_data:/var/lib/postgresql/data
     env_file:
       - ./.env
+    environment:
+      POSTGRES_UNIX_SOCKET_DIRECTORIES: ""
     networks:
       - grobot_net
     restart: unless-stopped
@@ -15,12 +17,17 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+      
 
   # --- Base de données vectorielle ---
   chromadb:
     build:
       context: ./chromadb_overriden
     container_name: grobot_chromadb
+    user: root
     volumes:
       - ./data/chroma_data:/data # <-- CORRIGÉ: Le volume doit monter sur le répertoire racine /chroma
     ports:
@@ -33,6 +40,9 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
 
   # --- Broker de messages pour les tâches asynchrones ---
   redis:
@@ -46,6 +56,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
 
   # --- Service d'Application Combiné (Frontend + API) ---
   app:
@@ -76,6 +89,9 @@ services:
       chromadb:
         condition: service_healthy
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
 
   # --- Service Worker pour les tâches de fond (Celery) ---
   worker:
@@ -100,6 +116,9 @@ services:
     networks:
       - grobot_net
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
 
   # --- Service de Planification des Tâches (Celery Beat) ---
   celery-beat:
@@ -123,6 +142,9 @@ services:
     networks:
       - grobot_net
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
 
   # --- Service de gestion des processus de bots Discord ---
   discord-bot-launcher:
@@ -140,6 +162,9 @@ services:
     networks:
       - grobot_net
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
 
   # --- Service d'outils GroBot MCP ---
   grobot_tools:
@@ -164,7 +189,11 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-  # --- Réseau pour la communication entre services ---
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+      
+# --- Réseau pour la communication entre services ---
 networks:
   grobot_net:
     driver: bridge

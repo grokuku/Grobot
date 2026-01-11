@@ -1,50 +1,49 @@
 # Framework Backend
-fastapi
-
-# Serveur ASGI
-uvicorn
-websockets # <-- ADDED: For WebSocket support in FastAPI/Uvicorn
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+websockets>=14.0
 
 # Tâches asynchrones
-celery
-redis
-croniter # For parsing cron strings in Celery tasks
+celery>=5.4.0
+redis>=5.2.0
+croniter>=6.0.0
 
-# Base de données (ORM et driver PostgreSQL)
-sqlalchemy
-psycopg[binary]
+# Base de données
+sqlalchemy>=2.0.36
+psycopg[binary]>=3.2.0
 
-# Outil de migration de base de données
-alembic
+# Validation et Configuration (Crucial pour LiteLLM)
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
 
-# Validation et gestion de la configuration
-pydantic
-pydantic-settings
+# Clients HTTP & Outils
+httpx>=0.28.0
+jinja2>=3.1.5
+python-multipart>=0.0.20
+requests>=2.32.0
 
-# Client HTTP (pour les appels entre services si nécessaire)
-httpx
+# Traitement de fichiers
+python-magic>=0.4.27
+Pillow>=11.0.0
 
-# Templating HTML et gestion des formulaires
-jinja2
-python-multipart
-requests
+# IA & Vector Database
+chromadb-client>=0.6.0
+tokenizers>=0.21.0
+onnxruntime>=1.20.0
 
-# Client pour la base de données vectorielle
-chromadb-client
-tokenizers
-onnxruntime
+# --- LLM Stack (MODERNISÉE) ---
+# Ollama
+ollama>=0.5.0
 
-# --- NEW: File processing libraries ---
-python-magic
-Pillow
+# LiteLLM & OpenAI (Couplage fort pour les types)
+# L'ajout explicite de openai assure la compatibilité des objets Response
+openai>=1.60.0
+litellm>=1.60.0
 
-# --- NEW: Ollama client library ---
-ollama>=0.5.3
-litellm
-
-# --- NEW: Agentic Context Engine ---
+# --- Frameworks Spécifiques ---
+# Agentic Context Engine
 ace-framework
 
-# --- NEW: MCP Standard Libraries ---
-mcp
-mcp-use
+# --- MCP Standard Libraries ---
+mcp>=1.1.0
+mcp-use>=0.2.0

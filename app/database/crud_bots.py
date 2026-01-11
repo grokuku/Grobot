@@ -1,6 +1,4 @@
-####
-# FICHIER: app/database/crud_bots.py
-####
+# app/database/crud_bots.py
 import time
 from typing import List
 from sqlalchemy.orm import Session, joinedload
@@ -78,16 +76,20 @@ def create_bot(db: Session, bot: bot_schemas.BotCreate) -> Bot:
         decisional_llm_server_url=bot.decisional_llm_server_url,
         decisional_llm_model=bot.decisional_llm_model,
         decisional_llm_context_window=bot.decisional_llm_context_window,
+        decisional_llm_api_key=bot.decisional_llm_api_key, # FIXED: Added missing field
 
         tools_llm_server_url=bot.tools_llm_server_url,
         tools_llm_model=bot.tools_llm_model,
         tools_llm_context_window=bot.tools_llm_context_window,
+        tools_llm_api_key=bot.tools_llm_api_key, # FIXED: Added missing field
 
         output_client_llm_server_url=bot.output_client_llm_server_url,
         output_client_llm_model=bot.output_client_llm_model,
         output_client_llm_context_window=bot.output_client_llm_context_window,
+        output_client_llm_api_key=bot.output_client_llm_api_key, # FIXED: Added missing field
         
-        multimodal_llm_model=bot.multimodal_llm_model
+        multimodal_llm_model=bot.multimodal_llm_model,
+        multimodal_llm_api_key=bot.multimodal_llm_api_key # FIXED: Added missing field
     )
     db.add(db_bot)
     db.commit()

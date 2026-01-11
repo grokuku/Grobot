@@ -1,22 +1,10 @@
-####
-# FILE: app/core/llm_manager.py
-####
-"""
-LLM Manager with support for multiple providers (Ollama, OpenAI-compatible APIs via LiteLLM)
-History of changes:
-- Original implementation: Ollama-only support
-- 2025-01-09: Added multi-provider support using LiteLLM for OpenAI-compatible APIs
-- Design choices:
-  - Use LiteLLM as abstraction layer for OpenAI, Anthropic, Azure, etc.
-  - Keep Ollama client for backward compatibility and performance
-  - Auto-detect provider from server URL when possible
-  - Support API keys for cloud providers
-  - Maintain same interface for all providers
-"""
+# app/core/llm_manager.py
 
 import logging
 import os
 import threading
+import warnings
+import sys # ADDED: For forced stdout printing
 from datetime import datetime
 from typing import List, Dict, Any, AsyncGenerator, Union, Optional
 from enum import Enum
@@ -24,6 +12,9 @@ from enum import Enum
 import ollama
 from ollama import ResponseError
 from pydantic import BaseModel
+
+# Filter out noisy Pydantic warnings coming from LiteLLM/OpenAI internals
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
 # MODIFIED: Added prompts to be accessible from the manager
 from app.core.agents import prompts
@@ -38,6 +29,14 @@ log_lock = threading.Lock()
 
 # Ensure the log directory exists
 os.makedirs(LOG_DIR, exist_ok=True)
+
+def _mask_key(key: Optional[str]) -> str:
+    """Helper to mask API keys for logging."""
+    if not key:
+        return "None/Empty"
+    if len(key) < 8:
+        return "***"
+    return f"{key[:3]}...{key[-3:]}"
 
 def log_llm_interaction(config: 'LLMConfig', system_prompt: str, messages: List[Dict[str, Any]], response: Union[str, Dict[str, Any]], json_mode: bool):
     """
@@ -180,6 +179,7 @@ def resolve_llm_config(
     """
     Resolves the LLM configuration for a given category by checking bot-specific
     settings first, then falling back to global settings.
+    Treats empty strings as None to ensure proper fallback.
     """
     config_map = {
         LLM_CATEGORY_DECISIONAL: {
@@ -207,14 +207,26 @@ def resolve_llm_config(
 
     category_fields = config_map[category]
     
-    resolved_config = {
-        key: bot_value if bot_value is not None else global_value
-        for key, (bot_value, global_value) in category_fields.items()
-    }
+    resolved_config = {}
+    
+    # DEBUG: Log the resolution process
+    api_key_source = "None"
 
-    # DEBUG: Log the resolved configuration
-    logger.info(f"DEBUG resolve_llm_config: Category='{category}', Server='{resolved_config.get('server_url')}', "
-                f"Model='{resolved_config.get('model_name')}', API Key Present={'Yes' if resolved_config.get('api_key') else 'No'}")
+    for key, (bot_value, global_value) in category_fields.items():
+        # Treat empty strings as None for fallback purposes
+        if bot_value is not None and bot_value != "":
+            resolved_config[key] = bot_value
+            if key == "api_key": api_key_source = "Bot"
+        else:
+            resolved_config[key] = global_value
+            if key == "api_key" and global_value: api_key_source = "Global"
+
+    # DEBUG: Log the resolved configuration details
+    masked_key = _mask_key(resolved_config.get('api_key'))
+    logger.info(f"DEBUG resolve_llm_config: Category='{category}', "
+                f"Server='{resolved_config.get('server_url')}', "
+                f"Model='{resolved_config.get('model_name')}', "
+                f"API Key Source={api_key_source}, Key={masked_key}")
     
     # Create base config
     config = LLMConfig(**resolved_config)
@@ -256,6 +268,57 @@ def _prepare_messages_for_inference(messages: List[Union[Dict[str, Any], BaseMod
             
         prepared_messages.append(msg_dict)
     return prepared_messages
+
+# --- PARAM CALCULATION HELPER (DEEPSEEK FIX) ---
+
+def _get_common_litellm_params(config: LLMConfig, system_prompt: str, json_mode: bool) -> dict:
+    """
+    Helper to build params for LiteLLM calls with safe max_tokens calculation.
+    """
+    extra_params = {}
+    
+    # API Base
+    if config.server_url:
+        extra_params["api_base"] = config.server_url
+    
+    # API Key
+    if config.api_key:
+        extra_params["api_key"] = config.api_key
+    elif config.provider == LLMProvider.OPENAI_COMPATIBLE:
+        extra_params["api_key"] = "sk-placeholder-key"
+
+    # Custom Headers
+    if config.custom_headers:
+        extra_params["custom_headers"] = config.custom_headers
+    
+    # JSON Mode (DeepSeek fix)
+    if json_mode:
+        extra_params["response_format"] = {"type": "json_object"}
+    
+    # --- MAX TOKENS CALCULATION ---
+    # Goal: Allow large input contexts (e.g. 128k) while respecting output limits (e.g. 8k).
+    
+    # DeepSeek Beta/V3 specific hard limit for generation
+    DEEPSEEK_MAX_OUTPUT = 8192
+    
+    if config.context_window:
+        if config.context_window > DEEPSEEK_MAX_OUTPUT:
+            # SCENARIO: DB says 128k (or anything > 8k)
+            # We set max_tokens (OUTPUT) to the hard limit 8192.
+            # We TRUST LiteLLM/Provider to handle the massive input prompt separately.
+            extra_params["max_tokens"] = DEEPSEEK_MAX_OUTPUT
+        else:
+            # SCENARIO: DB says 8k or 4k (Small Context Models)
+            # We must be careful. If we ask for 4k output on a 4k model, there is 0 room for prompt.
+            # Heuristic: Reserve at least 25% or 500 tokens for prompt/input.
+            reserve_for_prompt = max(500, int(config.context_window * 0.25))
+            calculated_max = config.context_window - reserve_for_prompt
+            extra_params["max_tokens"] = max(256, calculated_max) # Ensure at least 256 tokens
+    else:
+        # Fallback if no context window defined
+        extra_params["max_tokens"] = 4096
+
+    return extra_params
 
 # --- Provider-specific client functions ---
 
@@ -333,17 +396,23 @@ async def _call_litellm(
     """Call any LLM via LiteLLM."""
     try:
         import litellm
-        from litellm import completion
+        from litellm import acompletion # UPDATED: Use acompletion for async calls
         
-        # Prepare messages with system prompt
+        # DeepSeek JSON fix: Inject instruction into system prompt
+        final_system_prompt = system_prompt
+        if json_mode and "json" not in system_prompt.lower():
+            final_system_prompt += "\n\nIMPORTANT: Your output MUST be a valid JSON object."
+
         prepared_messages = _prepare_messages_for_inference(messages)
-        full_messages = [{"role": "system", "content": system_prompt}] + prepared_messages
+        full_messages = [{"role": "system", "content": final_system_prompt}] + prepared_messages
         
-        # Build model string based on provider
-        if config.provider == LLMProvider.OPENAI:
-            model = config.model_name  # e.g., "gpt-4"
+        # Model Name Logic
+        model = config.model_name
+        if config.provider == LLMProvider.OPENAI_COMPATIBLE:
+            # For custom OpenAI-compatible endpoints
+            model = f"openai/{config.model_name}"
         elif config.provider == LLMProvider.ANTHROPIC:
-            model = f"claude-{config.model_name}" if not config.model_name.startswith("claude-") else config.model_name
+             model = f"claude-{config.model_name}" if not config.model_name.startswith("claude-") else config.model_name
         elif config.provider == LLMProvider.AZURE_OPENAI:
             model = f"azure/{config.model_name}"
         elif config.provider == LLMProvider.GOOGLE:
@@ -352,52 +421,17 @@ async def _call_litellm(
             model = f"cohere/{config.model_name}"
         elif config.provider == LLMProvider.MISTRAL:
             model = f"mistral/{config.model_name}"
-        elif config.provider == LLMProvider.OPENAI_COMPATIBLE:
-            # For custom OpenAI-compatible endpoints
-            model = f"openai/{config.model_name}"
-        else:
-            model = config.model_name
         
-        # Prepare API base and key for all providers
-        extra_params = {}
+        # Use helper for params
+        extra_params = _get_common_litellm_params(config, final_system_prompt, json_mode)
         
-        # Set API base for custom endpoints
-        if config.server_url:
-            # Different providers have different ways to specify custom endpoints
-            if config.provider == LLMProvider.OPENAI_COMPATIBLE:
-                extra_params["api_base"] = config.server_url
-            elif config.provider == LLMProvider.OPENAI:
-                extra_params["api_base"] = config.server_url
-            elif config.provider == LLMProvider.ANTHROPIC:
-                extra_params["api_base"] = config.server_url
-            elif config.provider == LLMProvider.AZURE_OPENAI:
-                extra_params["api_base"] = config.server_url
-            elif config.provider == LLMProvider.GOOGLE:
-                extra_params["api_base"] = config.server_url
-            elif config.provider == LLMProvider.COHERE:
-                extra_params["api_base"] = config.server_url
-            elif config.provider == LLMProvider.MISTRAL:
-                extra_params["api_base"] = config.server_url
-            else:
-                # For unknown providers, try to set api_base
-                extra_params["api_base"] = config.server_url
-        
-        # Set API key for all providers that require it
-        if config.api_key:
-            extra_params["api_key"] = config.api_key
-        
-        if config.custom_headers:
-            extra_params["custom_headers"] = config.custom_headers
-        
-        # Add JSON mode if requested
-        if json_mode:
-            extra_params["response_format"] = {"type": "json_object"}
-        
-        # Call LiteLLM
-        response = await completion(
+        # DEBUG: Log parameters
+        logger.warning(f"DEBUG _call_litellm: Calling '{model}' at '{config.server_url}'. MaxTokens={extra_params.get('max_tokens')}. Key Used: {_mask_key(extra_params.get('api_key'))}")
+
+        # Call LiteLLM (using acompletion for async)
+        response = await acompletion(
             model=model,
             messages=full_messages,
-            max_tokens=config.context_window,  # Note: context_window used as max_tokens approximation
             **extra_params
         )
         
@@ -424,9 +458,10 @@ async def _call_litellm_stream(
         prepared_messages = _prepare_messages_for_inference(messages)
         full_messages = [{"role": "system", "content": system_prompt}] + prepared_messages
         
-        # Build model string based on provider
-        if config.provider == LLMProvider.OPENAI:
-            model = config.model_name
+        # Model Name Logic
+        model = config.model_name
+        if config.provider == LLMProvider.OPENAI_COMPATIBLE:
+            model = f"openai/{config.model_name}"
         elif config.provider == LLMProvider.ANTHROPIC:
             model = f"claude-{config.model_name}" if not config.model_name.startswith("claude-") else config.model_name
         elif config.provider == LLMProvider.AZURE_OPENAI:
@@ -437,62 +472,61 @@ async def _call_litellm_stream(
             model = f"cohere/{config.model_name}"
         elif config.provider == LLMProvider.MISTRAL:
             model = f"mistral/{config.model_name}"
-        elif config.provider == LLMProvider.OPENAI_COMPATIBLE:
-            model = f"openai/{config.model_name}"
-        else:
-            model = config.model_name
         
-        # Prepare API base and key for all providers
-        extra_params = {}
+        # Use helper for params
+        extra_params = _get_common_litellm_params(config, system_prompt, json_mode=False)
         
-        # Set API base for custom endpoints
-        if config.server_url:
-            # Different providers have different ways to specify custom endpoints
-            if config.provider == LLMProvider.OPENAI_COMPATIBLE:
-                extra_params["api_base"] = config.server_url
-            elif config.provider == LLMProvider.OPENAI:
-                extra_params["api_base"] = config.server_url
-            elif config.provider == LLMProvider.ANTHROPIC:
-                extra_params["api_base"] = config.server_url
-            elif config.provider == LLMProvider.AZURE_OPENAI:
-                extra_params["api_base"] = config.server_url
-            elif config.provider == LLMProvider.GOOGLE:
-                extra_params["api_base"] = config.server_url
-            elif config.provider == LLMProvider.COHERE:
-                extra_params["api_base"] = config.server_url
-            elif config.provider == LLMProvider.MISTRAL:
-                extra_params["api_base"] = config.server_url
-            else:
-                # For unknown providers, try to set api_base
-                extra_params["api_base"] = config.server_url
-        
-        # Set API key for all providers that require it
-        if config.api_key:
-            extra_params["api_key"] = config.api_key
-        
-        if config.custom_headers:
-            extra_params["custom_headers"] = config.custom_headers
-        
+        # LOGGING VISIBLE WARNINGS FOR DEBUG
+        logger.warning(f"DEBUG: LiteLLM Stream Start. Model={model}, MaxTokens={extra_params.get('max_tokens')}, CtxWindowDB={config.context_window}")
+
         # Stream response
         response = await acompletion(
             model=model,
             messages=full_messages,
-            max_tokens=config.context_window,
             stream=True,
             **extra_params
         )
         
+        accumulated_text = ""
+        chunk_count = 0
+        
         async for chunk in response:
-            if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            try:
+                # 1. Safety check for chunk existence
+                if not chunk or not hasattr(chunk, 'choices') or not chunk.choices:
+                    continue
                 
+                delta = chunk.choices[0].delta
+                
+                # 2. Extract content (standard)
+                content = getattr(delta, 'content', None)
+                if content:
+                    # Log first chunk to verify flow
+                    if chunk_count == 0:
+                        logger.warning(f"DEBUG: First chunk received: {repr(content)}")
+                    accumulated_text += content
+                    chunk_count += 1
+                    yield content
+                
+            except Exception as chunk_error:
+                logger.warning(f"DEBUG: Chunk Error: {chunk_error}")
+                continue
+        
+        logger.warning(f"DEBUG: Stream finished. Total chunks: {chunk_count}")
+        logger.warning(f"!!! FULL RECEIVED CONTENT !!!\n{repr(accumulated_text)}\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        
+        if chunk_count == 0:
+             # If successful but empty, it might be the model refusing to speak
+             logger.warning("DEBUG: Empty stream from model.")
+
     except ImportError:
         logger.error("LiteLLM not installed. Please install with: pip install litellm")
         raise RuntimeError("LiteLLM is required for non-Ollama providers")
     except Exception as e:
-        logger.error(f"LiteLLM streaming error: {e}", exc_info=True)
-        error_message = "\n\n_An error occurred while generating the response._"
-        yield error_message
+        # CRITICAL DEBUGGING: Log and Yield error to UI
+        error_text = f"LiteLLM Stream Exception: {str(e)} | Type: {type(e).__name__}"
+        logger.error(error_text, exc_info=True)
+        yield f"\n\n_**Debug Error:** {str(e)}_"
 
 # --- Model Listing Functions ---
 
@@ -531,6 +565,9 @@ async def list_available_models(server_url: str, api_key: Optional[str] = None) 
             extra_params = {}
             if api_key:
                 extra_params["api_key"] = api_key
+            else:
+                # --- FIX: Inject dummy key for listing too ---
+                extra_params["api_key"] = "sk-placeholder-key"
             
             # For OpenAI-compatible endpoints
             if provider == LLMProvider.OPENAI_COMPATIBLE:

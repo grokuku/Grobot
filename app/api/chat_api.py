@@ -108,7 +108,16 @@ async def stream_response(
         raise HTTPException(status_code=500, detail="Invalid context: full_request missing.")
     
     reconstructed_request = chat_schemas.ProcessMessageRequest.model_validate(full_request_data)
+    
+    # --- FIX: CONSTRUCT FULL HISTORY (History + Current Message) ---
+    # The history must include the current message for the Synthesizer to see it
     history_data = [msg.model_dump() for msg in reconstructed_request.history]
+    current_message = {
+        "role": "user",
+        "content": reconstructed_request.message_content,
+        "name": reconstructed_request.user_display_name
+    }
+    history_data.append(current_message)
     
     plan_data = context.get("plan")
     tool_definitions = context.get("tool_definitions", [])
@@ -139,7 +148,7 @@ async def stream_response(
             async for chunk in agent_orchestrator.run_synthesis_phase(
                 bot=bot,
                 global_settings=global_settings,
-                history=history_data,
+                history=history_data, # Now contains the full history + current message
                 tool_results=tool_results
             ):
                 if await request.is_disconnected():
