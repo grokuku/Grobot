@@ -1,4 +1,3 @@
-# discord_bot_launcher/client/event_handler.py
 import logging
 import asyncio
 import time
@@ -18,6 +17,8 @@ from PIL import Image
 
 from . import discord_ui as ui
 from .api_client import APIClient
+# UPDATE: Import from local helper
+from .discord_message_helper import send_prompt_part, send_long_text
 
 logger = logging.getLogger(__name__)
 _bot_instance: Optional[commands.Bot] = None
@@ -55,60 +56,215 @@ async def _fetch_history(message: discord.Message, limit: int = 10) -> List[Dict
     return history
 
 async def _handle_streaming_response(channel: discord.TextChannel, stream_url: str):
-    UPDATE_INTERVAL_SECONDS = 1.5
-    UPDATE_BUFFER_SIZE_CHARS = 100
-    response_message = await ui.send_message(channel, "...")
-    if not response_message:
-        logger.error("Failed to send initial message for streaming response.")
-        return
-    full_content = ""
-    update_buffer = ""
+    """
+    Gère le streaming avec une machine à états et nettoyage intelligent des blocs de code.
+    - Mode TEXTE : Affiche le texte progressivement.
+    - Mode CODE : Détecte les ```, bufferise, détecte le langage, et envoie un fichier propre.
+    """
+    
+    # --- Configuration ---
+    UPDATE_INTERVAL = 1.0  # Secondes entre les mises à jour Discord
+    MAX_TEXT_LENGTH = 1900 # Marge de sécurité avant de couper un message texte
+    
+    # --- État initial ---
+    state = "TEXT" # "TEXT" ou "CODE"
+    stream_buffer = "" # Buffer pour l'analyse des tokens entrants
+    
+    # État Mode TEXTE
+    current_message: Optional[discord.Message] = await ui.send_message(channel, "...")
+    text_content = ""
+    
+    # État Mode CODE
+    code_content = ""
+    code_language = "txt"
+    status_message: Optional[discord.Message] = None
+    loading_dots = ["   ", ".  ", ".. ", "..."]
+    loading_idx = 0
+
     last_update_time = time.time()
+    
+    # Regex de détection : supporte ```json mais aussi ``` (vide) avec gestion des espaces
+    re_code_start = re.compile(r'``` *(\w*)') 
+    re_code_end = re.compile(r'```')
+
     try:
         async for chunk in _api_client_instance.stream_final_response(stream_url):
             if not chunk: continue
-            full_content += chunk
-            update_buffer += chunk
+            
+            stream_buffer += chunk
+            
+            # Boucle de traitement du buffer (car un chunk peut contenir plusieurs transitions)
+            while True:
+                if state == "TEXT":
+                    # Recherche d'un marqueur de début de code
+                    match = re_code_start.search(stream_buffer)
+                    
+                    if match:
+                        # 1. On a trouvé un début de code !
+                        start_idx = match.start()
+                        end_idx = match.end()
+                        
+                        # On flush le texte qui précède le code dans le message courant
+                        pre_text = stream_buffer[:start_idx]
+                        if pre_text:
+                            text_content += pre_text
+                            if current_message:
+                                await ui.edit_message(current_message, content=text_content)
+                        
+                        # On capture le langage si présent dans la balise d'ouverture
+                        lang = match.group(1)
+                        code_language = lang if lang else "txt"
+                        
+                        # Changement d'état
+                        state = "CODE"
+                        code_content = "" # Reset du buffer code
+                        stream_buffer = stream_buffer[end_idx:] # On consomme le buffer
+                        
+                        # Création du message d'attente animé
+                        if status_message: await status_message.delete()
+                        status_message = await channel.send(f"📝 *Receiving code block...*")
+                        current_message = None # On détache le message texte précédent (il est fini)
+                        
+                    else:
+                        # Pas de marqueur trouvé. 
+                        # ATTENTION : Si le buffer finit par "`" ou "``", on doit attendre le prochain chunk
+                        if stream_buffer.endswith("`") and len(stream_buffer) < 3:
+                            break # On attend le chunk suivant
+                        
+                        # Sinon, c'est du texte normal
+                        text_content += stream_buffer
+                        stream_buffer = "" # Tout consommé
+                        
+                        # Gestion de la taille max du message texte
+                        if len(text_content) > MAX_TEXT_LENGTH:
+                            # On ferme le message courant et on en ouvre un nouveau
+                            if current_message:
+                                await ui.edit_message(current_message, content=text_content)
+                            text_content = ""
+                            current_message = await channel.send("...")
+                        
+                        break # On sort de la boucle while
+
+                elif state == "CODE":
+                    # Recherche du marqueur de fin
+                    match = re_code_end.search(stream_buffer)
+                    
+                    if match:
+                        # Fin du bloc code trouvée !
+                        end_idx = match.start()
+                        after_idx = match.end()
+                        
+                        # On récupère tout le code
+                        code_chunk = stream_buffer[:end_idx]
+                        code_content += code_chunk
+                        
+                        # --- NETTOYAGE ET DÉTECTION EXTENSION ---
+                        code_content = code_content.strip()
+                        
+                        # Si le regex initial a raté le langage (ex: ```\njson),
+                        # le langage se trouve souvent sur la première ligne du contenu.
+                        first_newline = code_content.find('\n')
+                        if first_newline != -1:
+                            first_line = code_content[:first_newline].strip().lower()
+                            # Liste des langages probables pour éviter de supprimer du vrai code
+                            known_langs = ["json", "python", "py", "javascript", "js", "html", "css", "sql", "bash", "sh", "yaml", "xml", "markdown", "md", "text", "txt"]
+                            
+                            if first_line in known_langs:
+                                # On met à jour l'extension si elle était générique
+                                if code_language == "txt" or not code_language:
+                                    code_language = first_line
+                                # On supprime cette ligne du fichier final
+                                code_content = code_content[first_newline+1:].strip()
+                        
+                        # Mapping des extensions courantes
+                        file_ext = code_language if code_language else "txt"
+                        ext_map = {"python": "py", "javascript": "js", "json": "json", "html": "html", "css": "css", "sql": "sql", "yaml": "yaml", "markdown": "md", "text": "txt"}
+                        file_ext = ext_map.get(file_ext.lower(), file_ext)
+                        
+                        filename = f"snippet_{int(time.time())}.{file_ext}"
+                        # ----------------------------------------
+
+                        # Suppression du message d'attente
+                        if status_message:
+                            try:
+                                await status_message.delete()
+                                status_message = None
+                            except: pass
+                            
+                        # Envoi du fichier
+                        try:
+                            f = io.BytesIO(code_content.encode('utf-8'))
+                            discord_file = discord.File(f, filename=filename)
+                            await channel.send(f"📄 **{filename}**", file=discord_file)
+                        except Exception as e:
+                            logger.error(f"Failed to send code file: {e}")
+                            await channel.send(f"⚠️ Failed to send code file.")
+
+                        # Reset et retour au mode TEXTE
+                        state = "TEXT"
+                        text_content = ""
+                        stream_buffer = stream_buffer[after_idx:] # On consomme le buffer
+                        current_message = await channel.send("...") # Nouveau message pour la suite
+                        
+                    else:
+                        # Pas de fin trouvée, on accumule
+                        if stream_buffer.endswith("`") and len(stream_buffer) < 3:
+                            break
+                            
+                        code_content += stream_buffer
+                        stream_buffer = ""
+                        break
+
+            # --- Mises à jour UI périodiques (hors changement d'état) ---
             current_time = time.time()
-            if (current_time - last_update_time >= UPDATE_INTERVAL_SECONDS) or (len(update_buffer) >= UPDATE_BUFFER_SIZE_CHARS):
-                if full_content.strip():
-                    # During streaming, we only update text content, no attachments yet.
-                    await ui.edit_message(response_message, content=full_content)
-                update_buffer = ""
+            if current_time - last_update_time >= UPDATE_INTERVAL:
+                if state == "TEXT" and current_message and text_content:
+                    await ui.edit_message(current_message, content=text_content + " ▌") # Curseur visuel
+                
+                elif state == "CODE" and status_message:
+                    # Animation des points
+                    dots = loading_dots[loading_idx % len(loading_dots)]
+                    loading_idx += 1
+                    size_kb = len(code_content) / 1024
+                    await ui.edit_message(status_message, content=f"📝 *Receiving code block... ({size_kb:.1f} KB)* {dots}")
+                
                 last_update_time = current_time
+
+    except Exception as e:
+        logger.error(f"Stream processing error: {e}", exc_info=True)
+        await channel.send(f"⚠️ *Stream interrupted: {e}*")
+        
     finally:
-        # Final processing after the stream has finished
-        final_text = full_content
-        files_to_send = []
-        error_messages = []
-
-        # Regex to find our custom image URL tag
-        image_url_pattern = re.compile(r'\[IMAGE_URL:(.*?)\]')
+        # Nettoyage final
         
-        # Find all URLs from the tag and clean the text for the final message
-        found_urls = image_url_pattern.findall(final_text)
-        final_text = image_url_pattern.sub('', final_text).strip()
+        # 1. Si on était en train d'écrire du texte
+        if state == "TEXT":
+            if current_message:
+                # On retire le curseur et on affiche le reste du buffer s'il y en a
+                final_text = text_content + stream_buffer
+                
+                # Gestion finale des images (URLs dans le texte)
+                image_url_pattern = re.compile(r'\[IMAGE_URL:(.*?)\]')
+                found_urls = image_url_pattern.findall(final_text)
+                final_text = image_url_pattern.sub('', final_text).strip()
+                
+                if not final_text: final_text = "Done." # Fallback
+                
+                await ui.edit_message(current_message, content=final_text)
+                
+                if found_urls:
+                    for url in found_urls:
+                        image_file, _ = await _download_and_prepare_file(url, channel.guild)
+                        if image_file: await channel.send(file=image_file)
 
-        if found_urls:
-            logger.info(f"Found {len(found_urls)} image URL tags in the final response. Preparing attachments...")
-            # If we found URLs, download them using the existing helper function
-            for url in found_urls:
-                image_file, error_msg = await _download_and_prepare_file(url, channel.guild)
-                if image_file:
-                    files_to_send.append(image_file)
-                if error_msg:
-                    error_messages.append(f"_{error_msg}_")
-        
-        if error_messages:
-            final_text += "\n" + "\n".join(error_messages)
+        # 2. Si on a été coupés en plein milieu d'un bloc de code
+        elif state == "CODE":
+            if status_message: await status_message.delete()
+            # On envoie ce qu'on a récupéré
+            if code_content:
+                f = io.BytesIO(code_content.encode('utf-8'))
+                await channel.send(f"⚠️ *Stream interrupted inside code block. Partial content:*", file=discord.File(f, filename="partial_code.txt"))
 
-        # Make sure there's some content if the message was only an image tag
-        if not final_text and files_to_send:
-            final_text = "Here is the generated image:"
-        
-        # Finally, edit the message with the final text and any attached files.
-        # This assumes ui.edit_message correctly passes the 'attachments' kwarg.
-        await ui.edit_message(response_message, content=final_text or "...", attachments=files_to_send)
 
 async def on_message(message: discord.Message):
     if message.author.bot: return
@@ -121,7 +277,7 @@ async def on_message(message: discord.Message):
         (message.reference and isinstance(message.reference.resolved, discord.Message) and message.reference.resolved.author.id == _bot_instance.user.id)
     )
 
-    # --- START OF MODIFICATION: Channel-specific permission checks ---
+    # --- Channel-specific permission checks ---
     bot_settings = await _api_client_instance.get_bot_settings()
     
     channel_id_str = str(message.channel.id)
@@ -132,26 +288,21 @@ async def on_message(message: discord.Message):
         None
     )
 
-    # Default to True if no specific setting is found in the database
     has_access = channel_setting.get("has_access") if channel_setting else True
     passive_listening = channel_setting.get("passive_listening") if channel_setting else True
 
-    # Rule 1: Hard block if access is denied
     if not has_access:
         logger.debug(f"Ignoring message {message.id} in channel {channel_id_str}: access denied by settings.")
         return
 
-    # Rule 2: Ignore if passive listening is off and it's not a direct mention
     if not passive_listening and not is_direct_mention:
         logger.debug(f"Ignoring message {message.id} in channel {channel_id_str}: passive listening disabled.")
         return
-    # --- END OF MODIFICATION ---
     
     try:
         clean_current_content = await _replace_mentions(message.content, message)
 
         history = await _fetch_history(message)
-        # Add the current message with the author's name AND ID
         history.append({
             "role": "user",
             "content": clean_current_content,
@@ -181,7 +332,6 @@ async def on_message(message: discord.Message):
             logger.info(f"Orchestrator decided to stop. Reason: {response.get('reason')}")
             return
 
-        # BLOC AJOUTÉ : Add the thinking reaction only if the bot has decided to act.
         await ui.add_thinking_reaction(message)
 
         if action in ["CLARIFY", "ACKNOWLEDGE_AND_EXECUTE", "SYNTHESIZE"]:
@@ -280,35 +430,6 @@ async def _handle_mcp_stream(websocket_url: str) -> Dict:
         return {"error": {"message": f"Failed to handle the tool stream: {e}"}}
     return {"error": {"message": "Tool stream ended without a result."}}
 
-# --- START OF MODIFICATION: New helper function ---
-async def _send_prompt_part(
-    interaction: discord.Interaction,
-    header: str,
-    prompt_content: str,
-    filename: str
-):
-    """
-    Sends a part of a generated prompt, either as a text message in a code block
-    or as a file if it exceeds Discord's character limit.
-    """
-    DISCORD_CHAR_LIMIT = 2000
-    # Format the message with header and code block
-    message_as_text = f"{header}\n```\n{prompt_content}\n```"
-
-    if len(message_as_text) <= DISCORD_CHAR_LIMIT:
-        await interaction.followup.send(message_as_text)
-    else:
-        logger.info(f"Prompt part '{filename}' is too long for a message, sending as a file.")
-        try:
-            buffer = io.StringIO(prompt_content)
-            buffer.seek(0)
-            prompt_file = discord.File(buffer, filename=filename)
-            await interaction.followup.send(content=header, file=prompt_file)
-        except Exception as e:
-            logger.error(f"Failed to send prompt part as file: {e}", exc_info=True)
-            await interaction.followup.send(f"{header}\n_This prompt was too long to display and an error occurred while sending it as a file._")
-# --- END OF MODIFICATION ---
-
 async def _execute_and_process_tool_call(interaction: discord.Interaction, tool_name: str, arguments: Dict[str, Any]):
     acknowledgement_message: Optional[discord.Message] = None
     try:
@@ -344,7 +465,7 @@ async def _execute_and_process_tool_call(interaction: discord.Interaction, tool_
                 error_message = "Tool server returned a malformed error (see server logs for details)."
             raise Exception(f"Tool execution failed: {error_message}")
         
-        # --- MODIFICATION START: Handle prompt_generator with structured JSON ---
+        # Handle prompt_generator with structured JSON
         if tool_name == "generate_prompt":
             content_list = result.get("result", {}).get("content", [])
             
@@ -365,14 +486,14 @@ async def _execute_and_process_tool_call(interaction: discord.Interaction, tool_
                 logger.error(f"Could not find positive/negative prompts in JSON payload: {json_payload}")
                 raise Exception("Could not parse the response from the prompt generator.")
             
-            # Send prompts in separate messages using the existing helper function
-            await _send_prompt_part(
+            # Send prompts in separate messages using the new helper function
+            await send_prompt_part(
                 interaction,
                 header=f"<@{interaction.user.id}>, here is the **positive prompt**:",
                 prompt_content=positive_prompt,
                 filename="positive_prompt.txt"
             )
-            await _send_prompt_part(
+            await send_prompt_part(
                 interaction,
                 header="And here is the **negative prompt**:",
                 prompt_content=negative_prompt,
@@ -381,7 +502,6 @@ async def _execute_and_process_tool_call(interaction: discord.Interaction, tool_
 
             if acknowledgement_message: await acknowledgement_message.delete()
             return
-        # --- MODIFICATION END ---
 
         content_list = result.get("result", {}).get("content", [])
         text_parts = [f"<@{interaction.user.id}>, here is the result for your request!"]
