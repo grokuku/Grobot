@@ -247,15 +247,17 @@ export function populateModelDropdown(selectTarget, selectedValue, availableMode
     const _populateWithOptions = (targetSelect, models, currentSelection) => {
         const currentId = targetSelect.id;
         targetSelect.innerHTML = '';
-        if (!models || models.length === 0) {
-            targetSelect.innerHTML = '<option value="">No models found</option>';
-        } else {
-            const blankOption = document.createElement('option');
-            blankOption.value = "";
-            const isGlobalSettings = currentId && currentId.includes('default');
-            blankOption.textContent = isGlobalSettings ? "(Not Set)" : "(Use Global Default)";
-            targetSelect.appendChild(blankOption);
 
+        // Always add default/blank option
+        const blankOption = document.createElement('option');
+        blankOption.value = "";
+        const isGlobalSettings = currentId && currentId.includes('default');
+        blankOption.textContent = isGlobalSettings ? "(Not Set)" : "(Use Global Default)";
+        targetSelect.appendChild(blankOption);
+
+        const renderedModels = new Set();
+
+        if (models && models.length > 0) {
             models.forEach(modelObj => {
                 if (modelObj && typeof modelObj === 'object' && modelObj.model) {
                     const option = document.createElement('option');
@@ -263,13 +265,27 @@ export function populateModelDropdown(selectTarget, selectedValue, availableMode
                     option.value = modelName;
                     option.textContent = modelName;
                     targetSelect.appendChild(option);
+                    renderedModels.add(modelName);
                 }
             });
-
-            // After populating all options, set the value of the select element.
-            // This is more robust than setting .selected on individual options.
-            targetSelect.value = currentSelection || "";
+        } else {
+            // Optional: indicate no models found if needed, but we still want to show the saved one below
+            const noOption = document.createElement('option');
+            noOption.disabled = true;
+            noOption.textContent = "--- No models discovered ---";
+            targetSelect.appendChild(noOption);
         }
+
+        // FIX: If we have a saved value that isn't in the list, add it so it doesn't disappear
+        if (currentSelection && !renderedModels.has(currentSelection)) {
+            const preservedOption = document.createElement('option');
+            preservedOption.value = currentSelection;
+            preservedOption.textContent = `${currentSelection} (Saved)`;
+            targetSelect.appendChild(preservedOption);
+        }
+
+        // After populating all options, set the value of the select element.
+        targetSelect.value = currentSelection || "";
     };
 
     if (forceRefresh) {
@@ -482,6 +498,8 @@ function createLlmConfigBlock(
         fieldset.querySelector(`#${serverField}`).addEventListener('input', (e) => draftState[serverField] = e.target.value);
         modelSelectElement.addEventListener('change', (e) => draftState[modelField] = e.target.value);
         fieldset.querySelector(`#${contextField}`).addEventListener('input', (e) => draftState[contextField] = e.target.value ? parseInt(e.target.value, 10) : null);
+        // FIX: Add listener for API Key
+        fieldset.querySelector(`#${apiKeyField}`).addEventListener('input', (e) => draftState[apiKeyField] = e.target.value);
     }
 
     fieldset.querySelector(`#refresh-${fieldIdPrefix}${category}-models-btn`).addEventListener('click', () => {
@@ -709,7 +727,7 @@ export async function renderGlobalSettingsForm(settings, eventHandlers) {
         'default_'
     ));
     llmFieldset.appendChild(createLlmConfigBlock(
-        'tool', // --- CORRECTED --- Was 'tools'
+        'tools', // --- CORRECTED --- Was 'tool'
         'Default Tool-Use Model', 'Default for logic and structured JSON generation.', null,
         settings.default_tool_llm_server,
         settings.default_tool_llm_model,
@@ -718,7 +736,7 @@ export async function renderGlobalSettingsForm(settings, eventHandlers) {
         'default_'
     ));
     llmFieldset.appendChild(createLlmConfigBlock(
-        'output', // --- CORRECTED --- Was 'output_client'
+        'output_client', // --- CORRECTED --- Was 'output'
         'Default Output Model', 'Default for high-quality, user-facing responses.', null,
         settings.default_output_llm_server,
         settings.default_output_llm_model,

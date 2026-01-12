@@ -111,9 +111,22 @@ export async function handleSaveBotSettings(botId, draftBot) {
         passive_listening_enabled: draftBot.passive_listening_enabled,
         system_prompt: draftBot.system_prompt,
         personality: draftBot.personality,
-        decisional_model: draftBot.decisional_model,
-        tool_model: draftBot.tool_model,
-        output_model: draftBot.output_model,
+
+        // --- FIX: Using correct field names for bot-specific settings ---
+        decisional_llm_server_url: draftBot.decisional_llm_server_url,
+        decisional_llm_model: draftBot.decisional_llm_model,
+        decisional_llm_context_window: draftBot.decisional_llm_context_window,
+        decisional_llm_api_key: draftBot.decisional_llm_api_key,
+
+        tools_llm_server_url: draftBot.tools_llm_server_url,
+        tools_llm_model: draftBot.tools_llm_model,
+        tools_llm_context_window: draftBot.tools_llm_context_window,
+        tools_llm_api_key: draftBot.tools_llm_api_key,
+
+        output_client_llm_server_url: draftBot.output_client_llm_server_url,
+        output_client_llm_model: draftBot.output_client_llm_model,
+        output_client_llm_context_window: draftBot.output_client_llm_context_window,
+        output_client_llm_api_key: draftBot.output_client_llm_api_key,
     };
 
     if (draftBot.discord_token && draftBot.discord_token !== '********') {
@@ -154,6 +167,8 @@ export async function handleCreateBot(event) {
     const data = {
         name: form.name.value,
         discord_token: tokenValue ? tokenValue : null,
+        // Note: llm_model here is just a helper for quick creation, backend handles mapping if needed
+        // but ideally we should use categories even on creation in the future.
         llm_model: form.llm_model.value,
         system_prompt: form.system_prompt.value,
         // Proactively adding personality to the create function as well
@@ -190,32 +205,34 @@ export async function handleSaveGlobalSettings(event) {
     ui.showSpinner();
     const form = event.target;
 
-    // CORRECTED: The keys of this payload now match the aliases expected by the backend API
-    // (e.g., 'default_decisional_llm_model') AND the 'name' attribute of the form's input fields.
+    // --- FIX: Updated field names to match ui.js refactoring (tools instead of tool, output_client instead of output) ---
     const data = {
         default_decisional_llm_server: form.default_decisional_llm_server.value || null,
         default_decisional_llm_model: form.default_decisional_llm_model.value || null,
         default_decisional_llm_context_window: form.default_decisional_llm_context_window.value ? parseInt(form.default_decisional_llm_context_window.value, 10) : null,
+        default_decisional_llm_api_key: (form.default_decisional_llm_api_key.value && form.default_decisional_llm_api_key.value !== '********') ? form.default_decisional_llm_api_key.value : null,
 
-        default_tool_llm_server: form.default_tool_llm_server.value || null,
-        default_tool_llm_model: form.default_tool_llm_model.value || null,
-        default_tool_llm_context_window: form.default_tool_llm_context_window.value ? parseInt(form.default_tool_llm_context_window.value, 10) : null,
+        default_tool_llm_server: form.default_tools_llm_server.value || null,
+        default_tool_llm_model: form.default_tools_llm_model.value || null,
+        default_tool_llm_context_window: form.default_tools_llm_context_window.value ? parseInt(form.default_tools_llm_context_window.value, 10) : null,
+        default_tool_llm_api_key: (form.default_tools_llm_api_key.value && form.default_tools_llm_api_key.value !== '********') ? form.default_tools_llm_api_key.value : null,
 
-        default_output_llm_server: form.default_output_llm_server.value || null,
-        default_output_llm_model: form.default_output_llm_model.value || null,
-        default_output_llm_context_window: form.default_output_llm_context_window.value ? parseInt(form.default_output_llm_context_window.value, 10) : null,
+        default_output_llm_server: form.default_output_client_llm_server.value || null,
+        default_output_llm_model: form.default_output_client_llm_model.value || null,
+        default_output_llm_context_window: form.default_output_client_llm_context_window.value ? parseInt(form.default_output_client_llm_context_window.value, 10) : null,
+        default_output_llm_api_key: (form.default_output_client_llm_api_key.value && form.default_output_client_llm_api_key.value !== '********') ? form.default_output_client_llm_api_key.value : null,
 
         tools_system_prompt: form.tools_system_prompt.value,
         context_header_default_prompt: form.context_header_default_prompt.value
     };
 
     try {
-        console.log('>>> [SAVE ATTEMPT] Sending this payload to backend:', JSON.stringify(data, null, 2));
         const updatedSettings = await api.saveGlobalSettings(data);
         ui.showToast('Global settings saved successfully!');
         await ui.renderGlobalSettingsForm(updatedSettings, getGlobalSettingsEventHandlers());
     } catch (error) {
         ui.showToast(`Error saving settings: ${error.message}`, 'error');
+        console.error('Error saving global settings:', error);
     } finally {
         ui.hideSpinner();
     }
