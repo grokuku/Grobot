@@ -249,9 +249,14 @@
         *   **Fichiers :** Conversion automatique des blocs de code en pièces jointes (`.json`, `.py`, etc.) avec détection de langage et nettoyage de la déclaration Markdown.
         *   **Architecture :** Déplacement de `discord_message_helper.py` dans le scope du launcher (`discord_bot_launcher/client/`) pour résoudre les problèmes d'import.
 
+    ### 7.2. État des Fonctionnalités Clés
+
+    1.  **Workflows (Automation) :** Le backend supporte désormais l'exécution de workflows complexes et le déclenchement via CRON (Celery Beat). L'intégration MCP-Use est active pour les étapes de workflow.
+    2.  **Analyse de Fichiers :** L'endpoint `/files/{uuid}/analyze` est temporairement désactivé (renvoie 503) en attente d'une refonte du module d'analyse.
+
     ### 7.3. Plan d'Action
 
-    1.  **Workflows :** Validation et stabilisation de l'éditeur de workflows (fonctionnalité suivante).
+    1.  **Workflows (UI) :** Validation finale de l'interface utilisateur pour la création et l'édition des workflows.
     2.  **Logs UI :** Vérifier que les logs remontent bien via WebSocket (le code semble correct, à tester plus avant).
 
     ---
