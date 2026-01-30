@@ -35,8 +35,12 @@ FROM nginx:stable-bullseye AS final
 
 # Installer 'gosu' (équivalent de 'su-exec' sur Debian) et la dépendance d'exécution libffi
 # CHANGEMENT: Utilisation de apt-get et installation de gosu
-# --- AJOUT ---: Ajout de 'libmagic1' pour la bibliothèque python-magic
-RUN apt-get update && apt-get install -y --no-install-recommends gosu libffi7 libmagic1 \
+# --- AJOUT ---: Ajout de 'libmagic1' pour python-magic ET 'libsqlite3-0' pour Mem0/SQLite
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gosu \
+    libffi7 \
+    libmagic1 \
+    libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copier l'ENSEMBLE de l'installation Python (librairies, exécutables, etc.)

@@ -1,7 +1,6 @@
-# app/database/sql_models.py
 from sqlalchemy import (
     Column, Integer, String, JSON, DateTime, ForeignKey, Text, Boolean,
-    BigInteger, UniqueConstraint, CheckConstraint, Float
+    BigInteger, UniqueConstraint, CheckConstraint, Float, text
 )
 from sqlalchemy.orm import relationship, backref
 from sqlalchemy.sql import func
@@ -25,22 +24,34 @@ class GlobalSettings(Base):
 
     # --- Categorized LLM Settings ---
     decisional_llm_server_url = Column(String, nullable=True, default="http://host.docker.internal:11434")
-    decisional_llm_model = Column(String, nullable=True) # MODIFIED
-    decisional_llm_context_window = Column(Integer, nullable=True, default=4096) # MODIFIED
-    decisional_llm_api_key = Column(String, nullable=True) # NEW: API key for decisional LLM
+    decisional_llm_model = Column(String, nullable=True) 
+    decisional_llm_context_window = Column(Integer, nullable=True, default=4096) 
+    decisional_llm_api_key = Column(String, nullable=True) 
 
     tools_llm_server_url = Column(String, nullable=True, default="http://host.docker.internal:11434")
-    tools_llm_model = Column(String, nullable=True) # MODIFIED
-    tools_llm_context_window = Column(Integer, nullable=True, default=8192) # MODIFIED
-    tools_llm_api_key = Column(String, nullable=True) # NEW: API key for tools LLM
+    tools_llm_model = Column(String, nullable=True) 
+    tools_llm_context_window = Column(Integer, nullable=True, default=8192) 
+    tools_llm_api_key = Column(String, nullable=True) 
 
     output_client_llm_server_url = Column(String, nullable=True, default="http://host.docker.internal:11434")
-    output_client_llm_model = Column(String, nullable=True) # MODIFIED
-    output_client_llm_context_window = Column(Integer, nullable=True, default=16384) # MODIFIED
-    output_client_llm_api_key = Column(String, nullable=True) # NEW: API key for output client LLM
+    output_client_llm_model = Column(String, nullable=True) 
+    output_client_llm_context_window = Column(Integer, nullable=True, default=16384) 
+    output_client_llm_api_key = Column(String, nullable=True) 
 
-    multimodal_llm_model = Column(String, nullable=True, default="llava") # MODIFIED
-    multimodal_llm_api_key = Column(String, nullable=True) # NEW: API key for multimodal LLM
+    multimodal_llm_model = Column(String, nullable=True, default="llava") 
+    multimodal_llm_api_key = Column(String, nullable=True) 
+
+    # --- NOUVEAU : Embedding Settings (Memory) ---
+    # Configure quel moteur est utilisé pour vectoriser les souvenirs.
+    # Provider: 'openai', 'ollama', 'huggingface'
+    # AJOUT DE server_default POUR LA MIGRATION
+    embedding_provider = Column(String, default="openai", server_default=text("'openai'"), nullable=False)
+    # Model: 'text-embedding-3-small' (OpenAI) ou 'nomic-embed-text' (Ollama)
+    embedding_model = Column(String, default="text-embedding-3-small", server_default=text("'text-embedding-3-small'"), nullable=False)
+    # API Key pour le provider d'embedding (si nécessaire)
+    embedding_api_key = Column(String, nullable=True)
+    # Base URL pour le provider (ex: http://host.docker.internal:11434 pour Ollama)
+    embedding_base_url = Column(String, nullable=True)
 
     # --- Image Generation Service Settings ---
     image_generation_provider = Column(String, nullable=True, default="comfyui")
@@ -50,7 +61,7 @@ class GlobalSettings(Base):
     # --- Global Default System Prompts ---
     context_header_default_prompt = Column(
         Text,
-        nullable=True, # MODIFIED
+        nullable=True, 
         default=(
             '[IF context_type == "DIRECT_MESSAGE"]\n'
             'You are in a private conversation with the user \'{user_display_name}\' (username: @{user_name}).\n'
@@ -66,7 +77,7 @@ class GlobalSettings(Base):
     )
     tools_system_prompt = Column(
         Text,
-        nullable=True, # MODIFIED
+        nullable=True, 
         default=(
             "You have access to a set of tools you can use to answer the user's question.\n"
             "You must call tools by producing a JSON object with a `tool_calls` field.\n"
@@ -116,20 +127,20 @@ class Bot(Base):
     decisional_llm_server_url = Column(String, nullable=True)
     decisional_llm_model = Column(String, nullable=True)
     decisional_llm_context_window = Column(Integer, nullable=True)
-    decisional_llm_api_key = Column(String, nullable=True) # NEW: API key override for decisional LLM
+    decisional_llm_api_key = Column(String, nullable=True) 
 
     tools_llm_server_url = Column(String, nullable=True)
     tools_llm_model = Column(String, nullable=True)
     tools_llm_context_window = Column(Integer, nullable=True)
-    tools_llm_api_key = Column(String, nullable=True) # NEW: API key override for tools LLM
+    tools_llm_api_key = Column(String, nullable=True) 
 
     output_client_llm_server_url = Column(String, nullable=True)
     output_client_llm_model = Column(String, nullable=True)
     output_client_llm_context_window = Column(Integer, nullable=True)
-    output_client_llm_api_key = Column(String, nullable=True) # NEW: API key override for output client LLM
+    output_client_llm_api_key = Column(String, nullable=True) 
 
     multimodal_llm_model = Column(String, nullable=True)
-    multimodal_llm_api_key = Column(String, nullable=True) # NEW: API key override for multimodal LLM
+    multimodal_llm_api_key = Column(String, nullable=True) 
 
     image_generation_settings = Column(JSON, nullable=True)
     settings = Column(JSON, default=dict)

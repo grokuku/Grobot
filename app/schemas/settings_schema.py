@@ -13,7 +13,6 @@ class LLMModel(BaseModel):
 
 # --- Schémas pour la gestion des Paramètres Globaux ---
 
-# Schéma de base contenant les champs modifiables des paramètres globaux.
 class GlobalSettingsBase(BaseModel):
     decisional_llm_server_url: Optional[str] = Field(None, description="Default server URL for decisional category LLMs.", alias="default_decisional_llm_server")
     decisional_llm_model: Optional[str] = Field(None, description="Default model name for decisional category LLMs.", alias="default_decisional_llm_model")
@@ -36,6 +35,21 @@ class GlobalSettingsBase(BaseModel):
     multimodal_llm_api_key: Optional[str] = Field(
         None, description="API key for multimodal LLM.", alias="multimodal_llm_api_key"
     )
+
+    # --- NOUVEAU : Configuration des Embeddings (Mémoire) ---
+    embedding_provider: Optional[str] = Field(
+        "openai", description="The provider for memory embeddings (e.g., 'openai', 'ollama').", alias="default_embedding_provider"
+    )
+    embedding_model: Optional[str] = Field(
+        "text-embedding-3-small", description="The model name for embeddings.", alias="default_embedding_model"
+    )
+    embedding_api_key: Optional[str] = Field(
+        None, description="API key for the embedding provider.", alias="default_embedding_api_key"
+    )
+    embedding_base_url: Optional[str] = Field(
+        None, description="Base URL for the embedding provider (e.g., Ollama URL).", alias="default_embedding_server"
+    )
+
     context_header_default_prompt: Optional[str] = Field(
         None, description="The default prompt template for the context header."
     )
@@ -46,16 +60,10 @@ class GlobalSettingsBase(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-# Schéma utilisé pour la mise à jour des paramètres. Tous les champs sont optionnels.
 class GlobalSettingsUpdate(GlobalSettingsBase):
     pass
 
 
-# Schéma complet pour la lecture des paramètres globaux (ce que l'API retourne).
-# CORRECTED: This schema now correctly inherits from GlobalSettingsBase.
-# It only adds the 'id' field and the 'from_attributes' config.
-# It no longer re-declares fields, which preserves the Optional types and aliases
-# from the parent, fixing the validation error when a value is NULL in the DB.
 class GlobalSettings(GlobalSettingsBase):
     id: int
 
@@ -86,7 +94,6 @@ class LLMEvaluationRunResult(BaseModel):
     task_id: str
     status: str
     
-    # --- NEW: Add model name and context window for display ---
     llm_model_name: str
     llm_context_window: Optional[int] = None
     

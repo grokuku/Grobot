@@ -10,8 +10,8 @@ from app.database import sql_models # Important pour charger tous les modèles
 logger = logging.getLogger(__name__)
 
 # --- CONFIGURATION ---
-# Incrémentez ce numéro pour déclencher la migration
-CURRENT_APP_DB_VERSION = 2
+# Version 3 : Ajout des colonnes de configuration des Embeddings (Mémoire Mem0)
+CURRENT_APP_DB_VERSION = 3
 
 def get_current_db_version(connection):
     """Récupère la version stockée en base, ou 0 si la table n'existe pas."""
@@ -75,7 +75,6 @@ def migrate_if_needed(engine):
                 logger.info(f"-> Renommage de '{table_name}' en '{backup_name}'")
                 
                 # A. Récupérer les noms des index AVANT de renommer la table
-                # (Car 'ix_bots_name' va confliter avec le nouvel index créé plus tard)
                 try:
                     query_indexes = text("SELECT indexname FROM pg_indexes WHERE tablename = :t")
                     res_indexes = connection.execute(query_indexes, {"t": table_name})
@@ -90,25 +89,19 @@ def migrate_if_needed(engine):
 
                 # C. Renommer les index associés
                 for idx_name in indexes_to_rename:
-                    # On génère un nouveau nom unique pour l'index backup
-                    # Postgres limite à 63 caractères, on tronque si besoin
                     new_idx_name = f"{idx_name}{backup_suffix}"
                     if len(new_idx_name) > 63:
-                        # Tronquature "intelligente" : debut + hash/suffix
                         new_idx_name = new_idx_name[:40] + backup_suffix
                     
                     try:
-                        # On ignore les index qui auraient déjà le suffixe (cas de retry)
                         if not idx_name.endswith(backup_suffix):
                             connection.execute(text(f'ALTER INDEX "{idx_name}" RENAME TO "{new_idx_name}"'))
-                            # logger.info(f"   Index renommé : {idx_name} -> {new_idx_name}")
                     except Exception as e:
-                        # Ce n'est pas bloquant si c'est un index système implicite parfois
                         logger.warning(f"   Echec renommage index '{idx_name}': {e}")
         
         # Renommage table version si elle existe
         if "db_version" in existing_table_names:
-             connection.execute(text(f'ALTER TABLE "db_version" RENAME TO "db_version{backup_suffix}"'))
+                connection.execute(text(f'ALTER TABLE "db_version" RENAME TO "db_version{backup_suffix}"'))
 
         # ---------------------------------------------------------
         # 2. CRÉATION DU NOUVEAU SCHÉMA
@@ -127,15 +120,7 @@ def migrate_if_needed(engine):
             
             backup_name = backup_map[table_name]
             
-            # Récupération dynamique des colonnes communes
-            backup_columns_query = text(
-                "SELECT column_name FROM information_schema.columns WHERE table_name = :t"
-            )
-            # Note: information_schema peut être lent ou tricky dans une transaction DDL, 
-            # mais ici on a renommé, donc backup_name existe.
-            # Alternative plus robuste : select * limit 0
             try:
-                # On utilise une astuce SQLAlchemy pour inspecter les colonnes via SQL
                 res_col = connection.execute(text(f'SELECT * FROM "{backup_name}" LIMIT 0'))
                 backup_cols = list(res_col.keys())
             except Exception:
@@ -158,15 +143,10 @@ def migrate_if_needed(engine):
         # 4. RESET DES SÉQUENCES (AUTO-INCREMENT)
         # ---------------------------------------------------------
         logger.info("-> Réinitialisation des séquences (IDs)...")
-        # Pour Postgres, il faut remettre la séquence à max(id) + 1
         for table in target_tables:
             table_name = table.name
-            # On cherche s'il y a une colonne 'id' primaire (convention habituelle)
             if 'id' in table.columns and table.columns['id'].primary_key:
                 try:
-                    # Requête magique Postgres pour reset la séquence associée à une colonne serial
-                    # pg_get_serial_sequence renvoie le nom de la séquence
-                    # coalesce(max(id), 0) + 1 calcule la prochaine valeur
                     reset_seq_sql = text(f"""
                         SELECT setval(
                             pg_get_serial_sequence(:t, 'id'), 
@@ -175,10 +155,7 @@ def migrate_if_needed(engine):
                         )
                     """)
                     connection.execute(reset_seq_sql, {"t": table_name})
-                    # logger.info(f"   Séquence reset pour {table_name}")
-                except Exception as e:
-                    # Peut échouer si pas de séquence (ex: id n'est pas serial), on ignore
-                    # logger.debug(f"   Pas de séquence auto-incrémentée trouvée pour {table_name}: {e}")
+                except Exception:
                     pass
 
         # ---------------------------------------------------------

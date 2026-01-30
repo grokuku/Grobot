@@ -32,16 +32,14 @@ tokenizers>=0.21.0
 onnxruntime>=1.20.0
 
 # --- LLM Stack (MODERNISÉE) ---
-# Ollama
 ollama>=0.5.0
-
-# LiteLLM & OpenAI (Couplage fort pour les types)
-# L'ajout explicite de openai assure la compatibilité des objets Response
 openai>=1.60.0
 litellm>=1.60.0
 
+# --- Mémoire (NOUVEAU) ---
+mem0ai>=0.1.20
+
 # --- Frameworks Spécifiques ---
-# Agentic Context Engine
 ace-framework
 
 # --- MCP Standard Libraries ---
