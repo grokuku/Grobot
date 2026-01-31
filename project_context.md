@@ -1,19 +1,19 @@
 # Project Context: GroBot
-
+    
     ## 1. Vision et Objectifs du Projet
-
+    
     Le projet "GroBot" vise à créer une plateforme d'hébergement et de gestion **pour une flotte de bots Discord entièrement indépendants**. Il ne s'agit pas d'un seul bot multi-personnalités, mais d'une infrastructure capable de faire tourner de multiples processus de bots en parallèle.
-
+    
     L'objectif principal est une **administrabilité dynamique** via une **interface web moderne de type SPA (Single Page Application)**, permettant l'ajout, la configuration ou la désactivation d'un bot à chaud, **sans nécessiter le redémarrage des bots déjà en cours d'exécution**.
-
+    
     ---
-
+    
     ## 2. Principes d'Architecture Fondamentaux
-
+    
     1.  **Architecture d'Application Combinée :** Pour simplifier le déploiement et éliminer les problèmes de CORS, le Frontend et le Backend sont servis par un **unique service conteneurisé**. Nginx agit comme reverse proxy : il sert les fichiers statiques du frontend et redirige les requêtes API vers le processus FastAPI tournant dans le même conteneur.
     2.  **Configuration Centralisée en Base de Données :** Toute la configuration spécifique à un bot est stockée **uniquement** dans PostgreSQL. Le fichier `.env` est réservé à la configuration de la plateforme.
     3.  **Isolation par Processus :** Chaque bot actif tourne dans son propre processus système, géré par le service `discord-bot-launcher`.
-    4.  **Isolation des Données (Mémoire) :** La mémoire à long terme (LTM) est stockée dans ChromaDB au sein d'une **collection dédiée par bot**.
+    4.  **Isolation des Données (Mémoire) :** La mémoire à long terme (LTM) est stockée dans ChromaDB au sein d'une **collection dédiée par bot**, gérée via la librairie **Mem0**.
     5.  **Communication Conteneur-Hôte :** L'URL `http://host.docker.internal:[port]` est la valeur standard pour qu'un conteneur accède à un service sur l'hôte. Les services communiquent entre eux via leur nom de service (ex: `http://app:8000`, `http://ollama:11434`, `http://grobot_tools:8001`).
     6.  **Gestion du Schéma de Base de Données (Stratégie Blue/Green) :** Alembic a été **supprimé** (jugé trop lourd). La gestion du schéma est désormais assurée par un module personnalisé `app/database/migration.py` qui s'exécute au démarrage. Il compare la version du code (`CURRENT_APP_DB_VERSION`) avec celle de la base, et si nécessaire :
         *   Renomme les tables et index existants (Backup).
@@ -34,18 +34,18 @@
         *   Si le contexte est petit (ex: 4096), l'application calcule une réserve pour le prompt afin de ne pas demander plus de tokens que le modèle ne peut en gérer au total.
     14. **Compatibilité DeepSeek JSON Strict :** Pour éviter les réponses vides avec DeepSeek V3 en mode JSON, le `llm_manager.py` injecte dynamiquement la directive *"IMPORTANT: Your output MUST be a valid JSON object"* dans le prompt système si le mode JSON est activé, satisfaisant ainsi les exigences strictes de l'API.
     15. **Streaming Robuste (Client Discord) :** Le client Discord (`api_client.py`) implémente un parser SSE (Server-Sent Events) basé sur un buffer. Il gère la fragmentation des paquets réseaux et les sauts de ligne multiples, garantissant que les réponses streamées ne sont jamais tronquées ou corrompues côté client.
-
+    
     ---
-
+    
     ## 3. Architecture et Technologies
-
+    
     ### 3.1. Technologies Principales
     *   **Orchestration :** Docker, Docker Compose
     *   **Backend API :** FastAPI
     *   **Serveur Applicatif :** Nginx (agissant comme serveur web statique et reverse proxy) et Uvicorn (pour l'API FastAPI).
     *   **Gestion des processus Bots :** Python 3.11+, `subprocess`
     *   **Base de Données Relationnelle (Gestion) :** PostgreSQL (via SQLAlchemy). **Gestion des migrations custom (`migration.py`).**
-    *   **Base de Données Vectorielle (Mémoire LTM Isolée) :** ChromaDB
+    *   **Base de Données Vectorielle (Mémoire LTM Isolée) :** ChromaDB, gérée par **Mem0**.
     *   **Interaction LLM :**
         *   `ollama` (pour les modèles locaux).
         *   `litellm` >= 1.60.0 (pour le support Multi-Provider et OpenAI-Compatible récent).
@@ -54,10 +54,11 @@
     *   **Client Discord :** `discord.py`
     *   **Tâches Asynchrones :** Celery, Redis
     *   **Standard Outils (MCP) :** `mcp` (SDK), `mcp-use` (Client), `starlette` (Transport SSE)
-
+    
     ### 3.2. Arborescence Complète du Projet et Rôle des Fichiers
-
-    ```    📁 GroBot/
+    
+    ```
+        📁 GroBot/
         ├─ 📄 .dockerignore                 # Ignore les fichiers non nécessaires lors de la construction de l'image Docker.
         ├─ 📄 .env.example                  # Fichier d'exemple pour les variables d'environnement.
         ├─ 📄 docker-compose.yml            # Définit et orchestre tous les services de l'application.
@@ -94,6 +95,7 @@
         │  │     ├─ 📄 archivist.py          # Agent pour archiver les informations en mémoire.
         │  │     ├─ 📄 clarifier.py          # Agent pour demander des informations manquantes.
         │  │     ├─ 📄 gatekeeper.py         # Agent pour décider si le bot doit répondre.
+        │  │     ├─ 📄 memory_manager.py     # Wrapper Mem0 pour la gestion de la mémoire LTM.
         │  │     ├─ 📄 parameter_extractor.py# Agent pour extraire les paramètres des outils.
         │  │     ├─ 📄 planner.py            # Agent pour créer le plan d'exécution des outils.
         │  │     ├─ 📄 prompts.py            # Centralise tous les prompts système des agents.
@@ -169,11 +171,11 @@
             └─ 📁 time_tool/                  # Outils liés au temps.
             └─ 📄 server.py                 # Point d'entrée du serveur MCP pour l'outil de temps.
     ```
-
+    
     ---
-
+    
     ## 4. Vision de l'Interface Cible (Post-Refonte)
-
+    
     *   **Disposition Générale :** Une application à deux colonnes principales.
         *   **Colonne de Gauche (Sidebar, redimensionnable) :**
             *   **Titre :** "GroBot".
@@ -191,17 +193,17 @@
                 *   **Memory :** Une vue de la mémoire vectorielle du bot.
                 *   **Knowledge Base :** Une interface pour gérer les connaissances du bot sur les utilisateurs (Recherche, Liste, Profils et Notes).
                 *   **Workflows :** Une interface graphique pour créer et gérer des automatisations (Workflows) déclenchées par CRON, avec un éditeur d'étapes supportant le chaînage de paramètres et l'utilisation d'outils MCP.
-
+    
     ---
-
+    
     ## 6. Documentation : Le Standard Model Context Protocol (MCP)
-
+    
     *   **Date d'Adoption Stricte :** 2025-12-19
     *   **Source de Vérité :** [Dépôt GitHub Officiel](https://github.com/modelcontextprotocol/modelcontextprotocol)
     *   **Architecture :** GroBot utilise strictement le SDK officiel `mcp` (pour les serveurs) et `mcp-use` (pour le client backend).
-
+    
     ### 6.1. Principes Techniques
-
+    
     1.  **Transport SSE et Starlette :** La communication utilise **Server-Sent Events (SSE)**.
         *   **Spécificité Starlette :** Lors de l'utilisation de Starlette avec `mcp`, l'endpoint recevant le `POST` des messages doit retourner un objet `Response` qui ne fait rien (NoOp), car le SDK `mcp` gère déjà l'envoi de la réponse ASGI. Sinon, une erreur "Double Response" se produit.
         *   **Routage :** Il est recommandé d'autoriser la méthode `POST` sur l'endpoint de handshake (ex: `/mcp`) en plus de l'endpoint dédié aux messages, pour une compatibilité maximale avec les clients.
@@ -212,17 +214,17 @@
         *   La découverte des outils (`tools/list`) est effectuée **serveur par serveur** de manière isolée pour éviter qu'un nœud défaillant ne bloque tout le système.
         *   **Retry Logic :** En raison de l'instabilité potentielle des connexions SSE (`httpx.RemoteProtocolError`), une logique de réessai (3 tentatives) est implémentée dans `agent_orchestrator.py` et `tools_api.py`.
     4.  **Problèmes Connus (SSE) :** Des erreurs de type `httpx.RemoteProtocolError: peer closed connection` surviennent occasionnellement. Le système les capture désormais et relance la connexion (Retry). Les logs peuvent afficher des erreurs MCP (connexion fermée), mais elles sont suivies d'une récupération réussie (`Successfully discovered ...`).
-
+    
     ### 6.2. Format de Définition d'un Outil
-
+    
     Chaque outil retourné respecte le JSON Schema standard. Le backend injecte désormais la liste des arguments attendus directement dans la description de l'outil fournie au LLM (Agent `Tool Identifier`), pour améliorer la prise de décision des modèles moins performants.
-
+    
     ---
-
+    
     ## 7. État Actuel et Plan d'Action
-
+    
     ### 7.1. Bugs et Corrections Récents
-
+    
     1.  **Authentification LLM (Erreur 401) [RÉSOLU] :** Correction de l'injection des clés API et de `crud_bots.py`.
     2.  **Crash LiteLLM (Async) [RÉSOLU] :** Passage à `acompletion` dans `llm_manager.py`.
     3.  **DeepSeek - Réponse Vide/Invalide [RÉSOLU] :**
@@ -248,29 +250,37 @@
         *   **Logique :** Mode TEXTE (streaming live) vs Mode CODE (bufferisation + animation "points").
         *   **Fichiers :** Conversion automatique des blocs de code en pièces jointes (`.json`, `.py`, etc.) avec détection de langage et nettoyage de la déclaration Markdown.
         *   **Architecture :** Déplacement de `discord_message_helper.py` dans le scope du launcher (`discord_bot_launcher/client/`) pour résoudre les problèmes d'import.
-
+    14. **Configuration Embeddings Mem0 (UI) [RÉSOLU] :** Ajout des champs dans "Global Settings" (Provider, Model, Server URL) et liaison avec le `MemoryManager` backend.
+    15. **Workflow UI Integration [RÉSOLU] :** L'éditeur de workflow est désormais opérationnel.
+    
     ### 7.2. État des Fonctionnalités Clés
-
-    1.  **Workflows (Automation) :** Le backend supporte désormais l'exécution de workflows complexes et le déclenchement via CRON (Celery Beat). L'intégration MCP-Use est active pour les étapes de workflow.
-    2.  **Analyse de Fichiers :** L'endpoint `/files/{uuid}/analyze` est temporairement désactivé (renvoie 503) en attente d'une refonte du module d'analyse.
-
+    
+    1.  **Workflows (Automation) :** Opérationnel. L'interface permet la création, l'édition et l'exécution de workflows complexes (CRON, Tool chaining).
+    2.  **Mémoire (Mem0) :** Opérationnel. L'utilisateur peut configurer le modèle d'embedding (Ollama/OpenAI/HF) globalement.
+    3.  **Analyse de Fichiers :** L'endpoint `/files/{uuid}/analyze` est temporairement désactivé (renvoie 503) en attente d'une refonte du module d'analyse.
+    
     ### 7.3. Plan d'Action
-
-    1.  **Workflows (UI) :** Validation finale de l'interface utilisateur pour la création et l'édition des workflows.
-    2.  **Logs UI :** Vérifier que les logs remontent bien via WebSocket (le code semble correct, à tester plus avant).
-
+    
+    1.  **Logs UI :** Vérifier que les logs remontent bien via WebSocket (le code semble correct, à tester plus avant en conditions réelles).
+    2.  **Refonte Analyse de Fichiers :** Ré-implémenter l'analyse de documents.
+    3.  **Monitorage Évaluation LLM :** Visualiser la progression des tests Celery.
+    
     ---
-
+    
     ## 9. Dépendances Externes Majeures
-
+    
     *   **Agentic Context Engine (ACE)**
         *   **Nom du Paquet PyPI :** `ace-framework`
         *   **Version lors de l'intégration :** 0.2.0
-
+    
     *   **LiteLLM & OpenAI**
         *   **Versions Requises :** `litellm>=1.60.0`, `openai>=1.60.0`, `pydantic>=2.10.0`
         *   **Usage :** Abstraction multi-provider et typage strict des réponses.
-
+    
     *   **Model Context Protocol (MCP)**
         *   **Paquets :** `mcp` (SDK Serveur), `mcp-use` (Client), `starlette` (Serveur Web ASGI).
         *   **Usage :** Standardisation des interactions avec les outils externes et internes.
+    
+    *   **Mem0 (Mémoire)**
+        *   **Paquet :** `mem0ai`
+        *   **Usage :** Gestion de la mémoire à long terme (Vector Store + Graph).

@@ -221,6 +221,12 @@ export async function handleSaveGlobalSettings(event) {
         default_output_llm_model: form.default_output_client_llm_model.value || null,
         default_output_llm_context_window: form.default_output_client_llm_context_window.value ? parseInt(form.default_output_client_llm_context_window.value, 10) : null,
         default_output_llm_api_key: (form.default_output_client_llm_api_key.value && form.default_output_client_llm_api_key.value !== '********') ? form.default_output_client_llm_api_key.value : null,
+        
+        // --- NEW: Embedding Configuration Retrieval ---
+        default_embedding_provider: form.default_embedding_provider.value,
+        default_embedding_model: form.default_embedding_model.value,
+        default_embedding_server: form.default_embedding_server.value || null,
+        default_embedding_api_key: (form.default_embedding_api_key.value && form.default_embedding_api_key.value !== '********') ? form.default_embedding_api_key.value : null,
 
         tools_system_prompt: form.tools_system_prompt.value,
         context_header_default_prompt: form.context_header_default_prompt.value

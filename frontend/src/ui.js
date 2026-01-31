@@ -1,5 +1,3 @@
-// FILE: frontend/src/ui.js
-
 import { fetchBots, fetchModels, fetchMcpServers, searchFilesForBot, fetchMcpServerSchema, fetchBotMemory, fetchMcpServerTools, fetchWorkflowsForBot, runWorkflow, deleteWorkflow, fetchWorkflow, fetchLLMEvaluationResults, fetchBotChannelsSettings } from './api.js';
 import { showWorkflowEditorModal } from './workflow_editor.js';
 import { handleDeleteMemoryEntry } from './events.js';
@@ -727,7 +725,7 @@ export async function renderGlobalSettingsForm(settings, eventHandlers) {
         'default_'
     ));
     llmFieldset.appendChild(createLlmConfigBlock(
-        'tools', // --- CORRECTED --- Was 'tool'
+        'tools', 
         'Default Tool-Use Model', 'Default for logic and structured JSON generation.', null,
         settings.default_tool_llm_server,
         settings.default_tool_llm_model,
@@ -736,7 +734,7 @@ export async function renderGlobalSettingsForm(settings, eventHandlers) {
         'default_'
     ));
     llmFieldset.appendChild(createLlmConfigBlock(
-        'output_client', // --- CORRECTED --- Was 'output'
+        'output_client', 
         'Default Output Model', 'Default for high-quality, user-facing responses.', null,
         settings.default_output_llm_server,
         settings.default_output_llm_model,
@@ -745,6 +743,48 @@ export async function renderGlobalSettingsForm(settings, eventHandlers) {
         'default_'
     ));
     form.appendChild(llmFieldset);
+
+    // --- NEW: Embedding / Memory Configuration Fieldset ---
+    const embeddingFieldset = document.createElement('fieldset');
+    embeddingFieldset.innerHTML = `
+        <legend>Memory & Embeddings</legend>
+        <p class="form-help">Configuration for Mem0 and Vector Database embeddings.</p>
+        <div class="llm-config-grid">
+            <div>
+                <label for="default_embedding_provider">Provider</label>
+                <select id="default_embedding_provider" name="default_embedding_provider">
+                    <option value="openai">OpenAI</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="huggingface">HuggingFace</option>
+                </select>
+            </div>
+            <div>
+                <label for="default_embedding_server">Server URL (Ollama)</label>
+                <input type="text" id="default_embedding_server" name="default_embedding_server" 
+                        value="${settings.default_embedding_server || ''}" 
+                        placeholder="e.g., http://host.docker.internal:11434">
+            </div>
+            <div>
+                <label for="default_embedding_model">Model Name</label>
+                <input type="text" id="default_embedding_model" name="default_embedding_model" 
+                        value="${settings.default_embedding_model || 'text-embedding-3-small'}" 
+                        placeholder="e.g., text-embedding-3-small">
+            </div>
+            <div>
+                <label for="default_embedding_api_key">API Key</label>
+                <input type="password" id="default_embedding_api_key" name="default_embedding_api_key" 
+                        value="${settings.default_embedding_api_key ? '********' : ''}" 
+                        placeholder="Leave empty if using local Ollama">
+            </div>
+        </div>
+    `;
+    // Set selected provider value programmatically
+    const providerSelect = embeddingFieldset.querySelector('#default_embedding_provider');
+    if (providerSelect && settings.default_embedding_provider) {
+        providerSelect.value = settings.default_embedding_provider;
+    }
+    form.appendChild(embeddingFieldset);
+    // ----------------------------------------------------
 
     const mcpFieldset = document.createElement('fieldset');
     mcpFieldset.innerHTML = `
@@ -797,7 +837,6 @@ export async function renderGlobalSettingsForm(settings, eventHandlers) {
     form.addEventListener('submit', eventHandlers.saveGlobalSettings);
 }
 
-// ... (le reste du fichier reste inchangé)
 // --- OMITTED FOR BREVITY ---
 export function renderBotKnowledgeBaseView(bot, container, eventHandlers) {
     container.innerHTML = `
