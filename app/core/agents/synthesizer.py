@@ -52,11 +52,11 @@ def _format_tool_results_for_prompt(tool_results: List[Dict[str, Any]]) -> str:
                 elif item_type == "image":
                     # Handle image source/url
                     if isinstance(item, dict):
-                         source_url = item.get("source") or item.get("url") # Try common keys
-                         mime_type = item.get("mimeType")
+                            source_url = item.get("source") or item.get("url") # Try common keys
+                            mime_type = item.get("mimeType")
                     else:
-                         source_url = getattr(item, "source", None) or getattr(item, "url", None)
-                         mime_type = getattr(item, "mimeType", None)
+                            source_url = getattr(item, "source", None) or getattr(item, "url", None)
+                            mime_type = getattr(item, "mimeType", None)
 
                     if source_url:
                         formatted_outputs.append(f"An image was generated and is available at the following URL: {source_url}")
@@ -66,8 +66,8 @@ def _format_tool_results_for_prompt(tool_results: List[Dict[str, Any]]) -> str:
             if formatted_outputs:
                 tool_output = " ".join(formatted_outputs)
             else:
-                 # If content list exists but is empty or unparsable
-                 tool_output = "The tool executed but returned no displayable content."
+                    # If content list exists but is empty or unparsable
+                    tool_output = "The tool executed but returned no displayable content."
 
         # 4. Last Resort: Dump the whole result
         else:
@@ -82,7 +82,8 @@ async def run_synthesizer(
     global_settings: GlobalSettings,
     history: List[Dict[str, Any]],
     tool_results: List[Dict[str, Any]], 
-    playbook_content: str = ""
+    playbook_content: str = "",
+    current_time: str = ""  # ADDED: current_time parameter
 ) -> AsyncGenerator[str, None]:
     """
     Runs the conversational Synthesizer agent for scenarios where NO tools were used.
@@ -94,10 +95,12 @@ async def run_synthesizer(
             bot, global_settings, llm_manager.LLM_CATEGORY_OUTPUT_CLIENT
         )
 
+        # Updated format call with current_time
         system_prompt = llm_manager.prompts.SYNTHESIZER_SYSTEM_PROMPT.format(
             bot_name=bot.name,
             bot_personality=bot.personality,
-            ace_playbook=playbook_content
+            ace_playbook=playbook_content,
+            current_time=current_time
         )
 
         logger.info(f"Conversational Synthesizer calling LLM with config: {output_config.model_dump()}")
@@ -119,7 +122,8 @@ async def run_tool_result_synthesizer(
     global_settings: GlobalSettings,
     history: List[Dict[str, Any]],
     tool_results: List[Dict[str, Any]],
-    playbook_content: str = ""
+    playbook_content: str = "",
+    current_time: str = ""  # ADDED: current_time parameter
 ) -> AsyncGenerator[str, None]:
     """
     Runs the Tool Result Synthesizer agent to report tool execution results to the user.
@@ -134,10 +138,12 @@ async def run_tool_result_synthesizer(
         # Format the results using the improved function
         tool_results_prompt_section = _format_tool_results_for_prompt(tool_results)
         
+        # Updated format call with current_time
         system_prompt = llm_manager.prompts.TOOL_RESULT_SYNTHESIZER_SYSTEM_PROMPT.format(
             bot_name=bot.name,
             bot_personality=bot.personality,
-            ace_playbook=playbook_content
+            ace_playbook=playbook_content,
+            current_time=current_time
         )
 
         final_prompt_messages = list(history)

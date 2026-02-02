@@ -1,6 +1,7 @@
 import logging
 import json
 from typing import Union
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -112,9 +113,15 @@ async def stream_response(
     # --- FIX: CONSTRUCT FULL HISTORY (History + Current Message) ---
     # The history must include the current message for the Synthesizer to see it
     history_data = [msg.model_dump() for msg in reconstructed_request.history]
+    
+    # RE-APPLY TIME & USER CONTEXT for Consistency
+    # We must format the current message exactly as the orchestrator did.
+    current_time_str = datetime.now(timezone.utc).strftime("%A, %B %d, %Y, %H:%M UTC")
+    formatted_content = f"[{current_time_str}] {reconstructed_request.user_display_name} (ID: {reconstructed_request.user_id}): {reconstructed_request.message_content}"
+    
     current_message = {
         "role": "user",
-        "content": reconstructed_request.message_content,
+        "content": formatted_content,
         "name": reconstructed_request.user_display_name
     }
     history_data.append(current_message)
@@ -148,7 +155,7 @@ async def stream_response(
             async for chunk in agent_orchestrator.run_synthesis_phase(
                 bot=bot,
                 global_settings=global_settings,
-                history=history_data, # Now contains the full history + current message
+                history=history_data, # Now contains the full history + current message with context
                 tool_results=tool_results
             ):
                 if await request.is_disconnected():

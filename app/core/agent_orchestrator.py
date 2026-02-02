@@ -4,6 +4,8 @@ import asyncio
 import json
 import os
 import re
+from datetime import datetime, timezone # NOUVEAU
+
 from pydantic import BaseModel
 
 # --- NEW: MCP-Use Import & HTTPX for Exceptions ---
@@ -94,6 +96,14 @@ def _load_bot_playbook_content(bot_id: int) -> str:
         logger.error(f"Failed to load ACE playbook for bot {bot_id}: {e}")
         return ""
 
+def _get_current_time_str() -> str:
+    """Returns the current UTC time formatted for prompt injection."""
+    return datetime.now(timezone.utc).strftime("%A, %B %d, %Y, %H:%M UTC")
+
+def _format_message_with_context(content: str, user_name: str, user_id: str, timestamp_str: str) -> str:
+    """Formats a message to include time and strict user identification."""
+    return f"[{timestamp_str}] {user_name} (ID: {user_id}): {content}"
+
 # --- Orchestrator Logic ---
 
 async def process_user_message(
@@ -111,6 +121,9 @@ async def process_user_message(
     
     global_settings = crud_settings.get_global_settings(db)
     
+    # Calculate timestamps once for consistency
+    current_time_str = _get_current_time_str()
+
     # 1. LOAD PLAYBOOK
     playbook_content = _load_bot_playbook_content(bot.id)
 
@@ -127,27 +140,34 @@ async def process_user_message(
     else:
         logger.info("No relevant long-term memories found.")
 
-    # 3. CONSTRUCT HISTORY
-    current_message = ChatMessage(
-        role="user", 
-        content=request.message_content, 
-        name=request.user_display_name
+    # 3. CONSTRUCT HISTORY WITH TIME AWARENESS
+    
+    # Format the current message with explicit Metadata (Time + User ID)
+    # This ensures the LLM knows EXACTLY who is speaking and when.
+    formatted_current_content = _format_message_with_context(
+        content=request.message_content,
+        user_name=request.user_display_name,
+        user_id=str(request.user_id),
+        timestamp_str=current_time_str
     )
     
-    # NEW: Inject Memory into the Context of the last message or as a System Note
-    # Strategy: Append it to the Playbook/System Prompt parts OR prepend to history.
-    # To keep it simple and effective, we wrap the current message with context if memory exists.
-    final_message_content = request.message_content
+    # Inject Memory Context if available
+    final_message_content = formatted_current_content
     if relevant_memories:
          final_message_content = f"""[CONTEXTUAL MEMORY START]
 The following facts are recalled from previous conversations with this user:
 {relevant_memories}
 [CONTEXTUAL MEMORY END]
 
-User Message:
-{request.message_content}"""
-         current_message.content = final_message_content
+{formatted_current_content}"""
 
+    # Create the proper ChatMessage object
+    current_message = ChatMessage(
+        role="user", 
+        content=final_message_content, 
+        name=request.user_display_name
+    )
+    
     full_history_dicts = [msg.model_dump() for msg in request.history]
     full_history_dicts.append(current_message.model_dump())
 
@@ -168,7 +188,12 @@ User Message:
     if not bypass_gatekeeper:
         logger.info("Running Gatekeeper...")
         decisional_config = llm_manager.resolve_llm_config(bot, global_settings, llm_manager.LLM_CATEGORY_DECISIONAL)
-        gatekeeper_prompt = prompts.GATEKEEPER_SYSTEM_PROMPT.format(bot_name=bot.name)
+        
+        # Inject Current Time into Gatekeeper Prompt
+        gatekeeper_prompt = prompts.GATEKEEPER_SYSTEM_PROMPT.format(
+            bot_name=bot.name,
+            current_time=current_time_str
+        )
         response_str = await llm_manager.call_llm(decisional_config, gatekeeper_prompt, full_history_dicts, json_mode=True)
         
         cleaned_response = _clean_json_response(response_str)
@@ -196,9 +221,11 @@ User Message:
         
     tools_list_str = "\n".join(tools_entries)
     
+    # Inject Current Time into Tool Identifier Prompt
     tool_id_prompt = prompts.TOOL_IDENTIFIER_SYSTEM_PROMPT.format(
         tools_list=tools_list_str,
-        ace_playbook=playbook_content
+        ace_playbook=playbook_content,
+        current_time=current_time_str
     )
     
     try:
@@ -224,6 +251,7 @@ User Message:
     for td in required_tool_definitions:
         tool_schemas_str += f"- Tool: {td['name']}\n  Schema: {json.dumps(td.get('inputSchema', {}))}\n"
     
+    # Param Extractor prompt doesn't strictly need time, but we use the standard helper anyway
     param_ext_prompt = prompts.PARAMETER_EXTRACTOR_SYSTEM_PROMPT.format(tool_schemas=tool_schemas_str)
     response_str = await llm_manager.call_llm(tools_config, param_ext_prompt, full_history_dicts, json_mode=True)
 
@@ -256,9 +284,11 @@ User Message:
     allowed_tools_str = ", ".join(required_tool_names)
     clean_params_input = json.dumps(param_ext_result.extracted_parameters)
 
+    # Inject Current Time into Planner Prompt
     planner_prompt = prompts.PLANNER_SYSTEM_PROMPT.format(
         ace_playbook=playbook_content,
-        allowed_tools=allowed_tools_str
+        allowed_tools=allowed_tools_str,
+        current_time=current_time_str
     )
     planner_messages = [{"role": "user", "content": f"Create a plan for these tools and parameters: {clean_params_input}"}]
     response_str = await llm_manager.call_llm(tools_config, planner_prompt, planner_messages, json_mode=True)
@@ -300,6 +330,8 @@ async def run_synthesis_phase(
 ) -> AsyncGenerator[str, None]:
     
     playbook_content = _load_bot_playbook_content(bot.id)
+    # Get current time for the synthesizer prompt
+    current_time_str = _get_current_time_str()
 
     if tool_results:
         async for chunk in synthesizer.run_tool_result_synthesizer(
@@ -307,7 +339,8 @@ async def run_synthesis_phase(
             global_settings=global_settings,
             history=history,
             tool_results=tool_results,
-            playbook_content=playbook_content
+            playbook_content=playbook_content,
+            current_time=current_time_str # Pass time to synthesizer
         ):
             yield chunk
     else:
@@ -316,7 +349,8 @@ async def run_synthesis_phase(
             global_settings=global_settings,
             history=history,
             tool_results=tool_results,
-            playbook_content=playbook_content
+            playbook_content=playbook_content,
+            current_time=current_time_str # Pass time to synthesizer
         ):
             yield chunk
 

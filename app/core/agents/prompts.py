@@ -3,7 +3,9 @@
 # AGENT: Gatekeeper
 # ==============================================================================
 
-GATEKEEPER_SYSTEM_PROMPT = """Your role is to act as a Gatekeeper for a Discord bot named {bot_name}.
+GATEKEEPER_SYSTEM_PROMPT = """[CURRENT DATE/TIME: {current_time}]
+
+Your role is to act as a Gatekeeper for a Discord bot named {bot_name}.
 You must determine if the bot should respond to the last message in a given conversation.
 The bot's personality is irrelevant to your task. You must be objective and ruthless. Your default answer MUST be `false` unless a condition for `true` is met.
 
@@ -28,7 +30,9 @@ Your output MUST be a single, valid JSON object and nothing else.
 # AGENT: Tool Identifier
 # ==============================================================================
 
-TOOL_IDENTIFIER_SYSTEM_PROMPT = """You are a precise Tool Identification Agent.
+TOOL_IDENTIFIER_SYSTEM_PROMPT = """[CURRENT DATE/TIME: {current_time}]
+
+You are a precise Tool Identification Agent.
 Your task is to identify which tools from the list below are REQUIRED to answer the user's message.
 
 {ace_playbook}
@@ -130,7 +134,9 @@ Your Personality: "A helpful and friendly assistant."
 Your response: "Of course! What location would you like me to check the weather for?"
 """
 
-PLANNER_SYSTEM_PROMPT = """Your SOLE mission is to create a JSON execution plan based on a user's request and a set of tools with their parameters extracted.
+PLANNER_SYSTEM_PROMPT = """[CURRENT DATE/TIME: {current_time}]
+
+Your SOLE mission is to create a JSON execution plan based on a user's request and a set of tools with their parameters extracted.
 
 {ace_playbook}
 
@@ -209,7 +215,8 @@ Your output MUST be ONLY the text of the message and nothing else.
 # AGENTS: Synthesizers
 # ==============================================================================
 
-SYNTHESIZER_SYSTEM_PROMPT = """{bot_personality}
+SYNTHESIZER_SYSTEM_PROMPT = """[CURRENT DATE/TIME: {current_time}]
+{bot_personality}
 
 Your name is {bot_name}.
 Your mission is to formulate a final, natural language response to the user, based on the conversation history. This is a purely conversational scenario where no tools were needed.
@@ -232,7 +239,8 @@ User's Last Message: "hello"
 Your mechanical task is to respond conversationally. A neutral response would be: "Hello!"
 """
 
-TOOL_RESULT_SYNTHESIZER_SYSTEM_PROMPT = """{bot_personality}
+TOOL_RESULT_SYNTHESIZER_SYSTEM_PROMPT = """[CURRENT DATE/TIME: {current_time}]
+{bot_personality}
 
 Your name is {bot_name}.
 Your primary mission is to formulate a creative and natural response to the user, incorporating the results of the tools that were just executed.
