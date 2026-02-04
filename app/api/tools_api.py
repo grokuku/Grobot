@@ -58,11 +58,14 @@ def build_mcp_config(servers: List[Any]) -> Dict[str, Any]:
         
         # Standard MCP over HTTP usually implies SSE/Streamable transport.
         # We use the URL from the DB. 
-        base_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}"
+        # FIX: Ensure no trailing slash which confuses mcp-use discovery
+        base_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}".rstrip('/')
         
         mcp_servers_config[server_key] = {
             "transport": "sse", # Defaulting to SSE as per standard MCP HTTP usage
             "url": base_url,
+            # FIX: Explicitly disable OAuth to prevent OIDC discovery issues with MCPHub
+            "oauth": False
         }
     
     return {"mcpServers": mcp_servers_config}
@@ -109,7 +112,10 @@ async def get_tool_definitions(bot_id: int, db: Session = Depends(get_db)):
                 for attempt in range(max_retries):
                     try:
                         client = MCPClient(single_server_config)
-                        await client.create_all_sessions()
+                        
+                        # SAFETY FIX: Add timeout to prevent blocking on OIDC/OAuth discovery
+                        # We use a timeout even with oauth=False as a safety measure
+                        await asyncio.wait_for(client.create_all_sessions(), timeout=10.0)
                         
                         session = client.get_session(server_key)
                         if not session:
@@ -140,6 +146,10 @@ async def get_tool_definitions(bot_id: int, db: Session = Depends(get_db)):
                         # Success, break retry loop
                         break 
                     
+                    except asyncio.TimeoutError:
+                         log.warning(f"Timeout discovering tools on {server.name}. Skipping.")
+                         break
+
                     except (httpx.RemoteProtocolError, httpx.ReadTimeout, httpx.ConnectError) as net_err:
                         log.warning(f"Network error discovering tools on {server.name} (Attempt {attempt+1}/{max_retries}): {net_err}")
                         if attempt < max_retries - 1:
@@ -187,7 +197,9 @@ async def execute_tool_call(request: ToolCallRequest, db: Session = Depends(get_
                         try:
                             cfg = build_mcp_config([server])
                             cl = MCPClient(cfg)
-                            await cl.create_all_sessions()
+                            # SAFETY FIX: Timeout
+                            await asyncio.wait_for(cl.create_all_sessions(), timeout=5.0)
+                            
                             sess = cl.get_session(f"server_{server.id}")
                             if sess:
                                 tools = await sess.list_tools()
@@ -230,7 +242,10 @@ async def execute_tool_call(request: ToolCallRequest, db: Session = Depends(get_
             try:
                 # Create fresh client per attempt to ensure clean state
                 client = MCPClient(config)
-                await client.create_all_sessions()
+                
+                # SAFETY FIX: Timeout for execution session creation
+                await asyncio.wait_for(client.create_all_sessions(), timeout=15.0)
+                
                 session = client.get_session(server_key)
                 
                 if not session:
@@ -270,6 +285,10 @@ async def execute_tool_call(request: ToolCallRequest, db: Session = Depends(get_
                 
                 return JSONResponse(content=json_response)
 
+            except asyncio.TimeoutError:
+                last_error = "Timeout during tool execution setup"
+                log.warning(f"Timeout executing tool (Attempt {attempt+1}/{max_retries})")
+
             except (httpx.RemoteProtocolError, httpx.ReadTimeout, httpx.ConnectError) as net_err:
                 last_error = net_err
                 log.warning(f"Network error executing tool (Attempt {attempt+1}/{max_retries}): {net_err}")
@@ -285,7 +304,7 @@ async def execute_tool_call(request: ToolCallRequest, db: Session = Depends(get_
         # If we exit the loop, it means retries failed
         return JSONResponse(content={
             "jsonrpc": "2.0", 
-            "error": {"code": -32603, "message": f"Network error after retries: {str(last_error)}"}
+            "error": {"code": -32603, "message": f"Network/Timeout error after retries: {str(last_error)}"}
         })
 
     except Exception as e:

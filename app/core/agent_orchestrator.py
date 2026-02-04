@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 import re
-from datetime import datetime, timezone # NOUVEAU
+from datetime import datetime, timezone
 
 from pydantic import BaseModel
 
@@ -354,7 +354,7 @@ async def run_synthesis_phase(
         ):
             yield chunk
 
-# --- Tool Discovery & Execution (Unchanged MCP Logic) ---
+# --- Tool Discovery & Execution (Modified for MCPHub Compatibility) ---
 
 async def get_available_tools_for_bot(db: Session, bot_id: int) -> List[Dict[str, Any]]:
     mcp_servers = crud_mcp.get_mcp_servers_for_bot(db, bot_id=bot_id)
@@ -363,15 +363,28 @@ async def get_available_tools_for_bot(db: Session, bot_id: int) -> List[Dict[str
 
     all_tools = []
     for server in mcp_servers:
-        base_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}"
+        # FIX 1: Strip trailing slash
+        base_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}".rstrip('/')
         server_key = f"server_{server.id}"
-        single_server_config = {"mcpServers": {server_key: {"transport": "sse", "url": base_url}}}
+        
+        # FIX 2: Explicitly disable OAuth to prevent mcp-use from trying OIDC discovery on MCPHub
+        single_server_config = {
+            "mcpServers": {
+                server_key: {
+                    "transport": "sse", 
+                    "url": base_url,
+                    "oauth": False
+                }
+            }
+        }
         
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 client = MCPClient(single_server_config)
-                await client.create_all_sessions()
+                # FIX 3: Timeout to prevent blocking
+                await asyncio.wait_for(client.create_all_sessions(), timeout=10.0)
+                
                 session = client.get_session(server_key)
                 if session:
                     tools = await session.list_tools()
@@ -383,9 +396,12 @@ async def get_available_tools_for_bot(db: Session, bot_id: int) -> List[Dict[str
                             "server_id": server.id 
                         })
                     break
-            except Exception:
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout discovering tools on {server.name}. Skipping.")
+                break
+            except Exception as e:
                 if attempt == max_retries - 1:
-                    logger.error(f"Discovery failed for server {server.name}")
+                    logger.error(f"Discovery failed for server {server.name}: {e}")
                 await asyncio.sleep(0.5)
     return all_tools
 
@@ -408,8 +424,15 @@ async def execute_tool_plan(
         association = crud_mcp.get_association(db, bot_id=bot_id, mcp_server_id=server_id)
         if association and association.mcp_server:
             server = association.mcp_server
-            base_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}"
-            mcp_config["mcpServers"][f"server_{server.id}"] = {"transport": "sse", "url": base_url}
+            # FIX 1: Strip trailing slash
+            base_url = f"http://{server.host}:{server.port}{server.rpc_endpoint_path}".rstrip('/')
+            
+            # FIX 2: Explicitly disable OAuth
+            mcp_config["mcpServers"][f"server_{server.id}"] = {
+                "transport": "sse", 
+                "url": base_url, 
+                "oauth": False
+            }
 
     if not mcp_config["mcpServers"]:
         return []
@@ -418,7 +441,8 @@ async def execute_tool_plan(
     client = None
     try:
         client = MCPClient(mcp_config)
-        await client.create_all_sessions()
+        # FIX 3: Timeout
+        await asyncio.wait_for(client.create_all_sessions(), timeout=15.0)
         
         for step in sorted(plan_result.plan, key=lambda x: x.step):
             tool_name = step.tool_name
@@ -436,9 +460,13 @@ async def execute_tool_plan(
                 try:
                     session = client.get_session(server_key)
                     if not session:
-                        await client.create_all_sessions()
+                        # Attempt to recreate sessions if lost
+                        await asyncio.wait_for(client.create_all_sessions(), timeout=5.0)
                         session = client.get_session(server_key)
                     
+                    if not session:
+                         raise Exception("Could not retrieve session")
+
                     result_obj = await session.call_tool(tool_name, step.arguments)
                     
                     final_output = {}
@@ -463,8 +491,9 @@ async def execute_tool_plan(
                 except (httpx.RemoteProtocolError, httpx.ReadTimeout) as net_err:
                     last_error = net_err
                     try:
+                        # Re-instantiate client on network error
                         client = MCPClient(mcp_config)
-                        await client.create_all_sessions()
+                        await asyncio.wait_for(client.create_all_sessions(), timeout=5.0)
                     except: pass
                     await asyncio.sleep(0.5)
                 except Exception as e:

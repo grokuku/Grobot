@@ -27,8 +27,11 @@ LOG_DIR = "/app/logs"
 LOG_FILE = os.path.join(LOG_DIR, "llm_interactions.md")
 log_lock = threading.Lock()
 
-# Ensure the log directory exists
-os.makedirs(LOG_DIR, exist_ok=True)
+# Ensure the log directory exists (With error handling)
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+except Exception as e:
+    logger.warning(f"Could not create log directory {LOG_DIR}: {e}")
 
 def _mask_key(key: Optional[str]) -> str:
     """Helper to mask API keys for logging."""
@@ -41,7 +44,13 @@ def _mask_key(key: Optional[str]) -> str:
 def log_llm_interaction(config: 'LLMConfig', system_prompt: str, messages: List[Dict[str, Any]], response: Union[str, Dict[str, Any]], json_mode: bool):
     """
     Logs the complete LLM interaction to a Markdown file.
+    Includes fail-safe mechanisms to prevent crashing if permissions are wrong.
     """
+    # Fail-fast check for write permissions
+    if os.path.exists(LOG_DIR) and not os.access(LOG_DIR, os.W_OK):
+        # Silent return to avoid flooding logs with PermissionErrors
+        return
+
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
@@ -99,8 +108,11 @@ def log_llm_interaction(config: 'LLMConfig', system_prompt: str, messages: List[
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(log_entry)
 
+    except (PermissionError, OSError):
+        # Silently fail if we can't write, to keep the bot alive
+        pass
     except Exception as e:
-        logger.error(f"Failed to write to LLM interaction log: {e}", exc_info=True)
+        logger.error(f"Failed to write to LLM interaction log: {e}")
 
 # --- Constants for LLM Categories ---
 LLM_CATEGORY_DECISIONAL = "decisional"

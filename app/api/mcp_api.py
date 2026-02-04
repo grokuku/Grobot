@@ -80,15 +80,19 @@ async def background_discovery_task():
 async def _discover_and_update_if_needed(server_model: any, db: Session):
     """
     Internal helper to perform tool discovery for a single server using MCP-Use.
+    MODIFIED: Explicitly disables OAuth and adds timeouts for MCPHub compatibility.
     """
-    base_url = f"http://{server_model.host}:{server_model.port}{server_model.rpc_endpoint_path}"
+    # FIX 1: Ensure no trailing slash
+    base_url = f"http://{server_model.host}:{server_model.port}{server_model.rpc_endpoint_path}".rstrip('/')
     
     # Configuration for MCP-Use
     config = {
         "mcpServers": {
             "discovery_session": {
                 "transport": "sse",
-                "url": base_url
+                "url": base_url,
+                # FIX 2: Explicitly disable OAuth discovery to prevent mcp-use from hanging
+                "oauth": False
             }
         }
     }
@@ -96,7 +100,9 @@ async def _discover_and_update_if_needed(server_model: any, db: Session):
     try:
         # Initialize Client
         client = MCPClient(config)
-        await client.create_all_sessions()
+        
+        # FIX 3: Timeout to prevent the background task from blocking if server is slow
+        await asyncio.wait_for(client.create_all_sessions(), timeout=10.0)
         
         session = client.get_session("discovery_session")
         if not session:
@@ -119,6 +125,8 @@ async def _discover_and_update_if_needed(server_model: any, db: Session):
         crud_mcp.update_mcp_server(db=db, server_id=server_model.id, server_update=update_payload)
         logger.info(f"Successfully discovered and cached {len(discovered_tools)} tools for MCP server '{server_model.name}'.")
 
+    except asyncio.TimeoutError:
+        logger.warning(f"Discovery timeout for MCP server '{server_model.name}' at {base_url}. Skipping.")
     except Exception as e:
         logger.error(f"Discovery for MCP server '{server_model.name}' ({base_url}) failed: {e}")
 

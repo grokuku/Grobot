@@ -20,7 +20,6 @@ services:
     security_opt:
       - seccomp:unconfined
       - apparmor:unconfined
-      
 
   # --- Base de données vectorielle ---
   chromadb:
@@ -29,7 +28,7 @@ services:
     container_name: grobot_chromadb
     user: root
     volumes:
-      - ./data/chroma_data:/data # <-- CORRIGÉ: Le volume doit monter sur le répertoire racine /chroma
+      - ./data/chroma_data:/data
     ports:
       - "8008:8000"
     networks:
@@ -44,7 +43,7 @@ services:
       - seccomp:unconfined
       - apparmor:unconfined
 
-  # --- Broker de messages pour les tâches asynchrones ---
+  # --- Broker de messages ---
   redis:
     image: redis:7-alpine
     container_name: grobot_redis
@@ -66,6 +65,7 @@ services:
       context: .
       dockerfile: ./Dockerfile
     container_name: grobot_app
+    # RETOUR A ROOT (suppression de user: 1000:1000)
     environment:
       - PYTHONUNBUFFERED=1
     env_file:
@@ -93,17 +93,19 @@ services:
       - seccomp:unconfined
       - apparmor:unconfined
 
-  # --- Service Worker pour les tâches de fond (Celery) ---
+  # --- Service Worker (Celery) ---
   worker:
     build:
       context: .
       dockerfile: ./Dockerfile
     container_name: grobot_worker
+    # RETOUR A ROOT
     command: celery -A app.worker.celery_app worker --loglevel=info
     volumes:
       - ./app:/app/app
       - ./logs:/app/logs
       - ./data/playbooks:/app/data/playbooks
+      - ./data/files_data:/app/files
     env_file:
       - ./.env
     extra_hosts:
@@ -120,12 +122,13 @@ services:
       - seccomp:unconfined
       - apparmor:unconfined
 
-  # --- Service de Planification des Tâches (Celery Beat) ---
+  # --- Service de Planification (Celery Beat) ---
   celery-beat:
     build:
       context: .
       dockerfile: ./Dockerfile
     container_name: grobot_celery_beat
+    # RETOUR A ROOT
     command: celery -A app.worker.celery_app beat --loglevel=info
     volumes:
       - ./app:/app/app
@@ -146,7 +149,7 @@ services:
       - seccomp:unconfined
       - apparmor:unconfined
 
-  # --- Service de gestion des processus de bots Discord ---
+  # --- Service Launcher Discord ---
   discord-bot-launcher:
     build:
       context: ./discord_bot_launcher
@@ -174,8 +177,8 @@ services:
     env_file:
       - ./.env
     ports:
-      - "8111:8001" # Expose file_tools sur l'hôte
-      - "8112:8002" # Expose time_tool sur l'hôte
+      - "8111:8001"
+      - "8112:8002"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -192,8 +195,7 @@ services:
     security_opt:
       - seccomp:unconfined
       - apparmor:unconfined
-      
-# --- Réseau pour la communication entre services ---
+
 networks:
   grobot_net:
     driver: bridge
